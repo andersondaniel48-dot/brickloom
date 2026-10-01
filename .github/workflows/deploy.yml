@@ -1,0 +1,67 @@
+# Builds the app, including its data, and publishes it to GitHub Pages.
+# Runs on every push to main, and on demand from the Actions tab.
+# One-time setup: in the repository's Settings > Pages, set "Source" to "GitHub Actions".
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a newer deploy replace one that is still running.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Works out the address the site is served from (/<repository>/ for a project site).
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      # The datasets (about 165 MB) are downloaded once a month rather than on every deploy.
+      - id: month
+        run: echo "stamp=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: data
+          key: datasets-${{ steps.month.outputs.stamp }}
+
+      - name: Download datasets and build the catalog, part geometry and set lists
+        run: npm run data
+
+      - run: npm test
+
+      - run: npm run build
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

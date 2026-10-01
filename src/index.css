@@ -1,0 +1,291 @@
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------ tokens */
+
+:root {
+  --bg: #f4f1ea;
+  --bg-deep: #ebe6db;
+  --surface: #ffffff;
+  --surface-2: #faf8f3;
+  --ink: #15171c;
+  --ink-2: #4b505b;
+  --ink-3: #8b8f99;
+  --line: rgba(21, 23, 28, 0.09);
+  --line-strong: rgba(21, 23, 28, 0.16);
+  --accent: #ffd23f;
+  --accent-deep: #f2bc0c;
+  --accent-ink: #1d1700;
+  --red: #e2382e;
+  --blue: #2a6fe8;
+  --green: #1f9d5a;
+  --amber: #d98a00;
+  --stud: rgba(21, 23, 28, 0.055);
+  --shadow-sm: 0 1px 2px rgba(21, 23, 28, 0.05), 0 2px 6px rgba(21, 23, 28, 0.04);
+  --shadow-md: 0 2px 4px rgba(21, 23, 28, 0.04), 0 10px 28px rgba(21, 23, 28, 0.08);
+  --shadow-lg: 0 6px 14px rgba(21, 23, 28, 0.06), 0 28px 64px rgba(21, 23, 28, 0.16);
+  /* Instruction pages keep their own paper colors in both themes, like a printed manual. */
+  --paper: #dceaf6;
+  --paper-2: #c9dff1;
+  --callout: #f2f8fd;
+  --callout-line: #8fb7d8;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0f1115;
+    --bg-deep: #0a0c0f;
+    --surface: #181b21;
+    --surface-2: #1f232b;
+    --ink: #f3f1ea;
+    --ink-2: #b6bac4;
+    --ink-3: #7c818d;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-strong: rgba(255, 255, 255, 0.16);
+    --accent-deep: #ffdf73;
+    --stud: rgba(255, 255, 255, 0.05);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 6px 14px rgba(0, 0, 0, 0.35), 0 28px 64px rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f1115;
+  --bg-deep: #0a0c0f;
+  --surface: #181b21;
+  --surface-2: #1f232b;
+  --ink: #f3f1ea;
+  --ink-2: #b6bac4;
+  --ink-3: #7c818d;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --accent-deep: #ffdf73;
+  --stud: rgba(255, 255, 255, 0.05);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 6px 14px rgba(0, 0, 0, 0.35), 0 28px 64px rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-deep: var(--bg-deep);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-ink: var(--accent-ink);
+  --color-brick-red: var(--red);
+  --color-brick-blue: var(--blue);
+  --color-brick-green: var(--green);
+  --color-brick-amber: var(--amber);
+  --color-paper: var(--paper);
+  --color-callout: var(--callout);
+  --color-callout-line: var(--callout-line);
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Outfit Variable', 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --shadow-soft: var(--shadow-sm);
+  --shadow-card: var(--shadow-md);
+  --shadow-float: var(--shadow-lg);
+  --ease-spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+  --breakpoint-xs: 26rem;
+}
+
+/* ------------------------------------------------------------------ base */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2.5px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ------------------------------------------------------------------ pieces */
+
+/* A field of studs seen from above: the app's signature texture. */
+@utility studs {
+  background-image: radial-gradient(circle at center, var(--stud) 0 34%, transparent 36%);
+  background-size: 22px 22px;
+}
+
+@utility studs-fine {
+  background-image: radial-gradient(circle at center, var(--stud) 0 32%, transparent 34%);
+  background-size: 14px 14px;
+}
+
+@utility card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), 0.75rem);
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.shimmer {
+  background: linear-gradient(100deg, transparent 30%, var(--line) 50%, transparent 70%) var(--surface-2);
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes scan-sweep {
+  0% {
+    transform: translateY(-10%);
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110%);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Step scrubber on the instruction pages */
+.step-slider {
+  appearance: none;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+.step-slider::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #15171c var(--fill), rgba(21, 23, 28, 0.14) var(--fill));
+}
+.step-slider::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #15171c var(--fill), rgba(21, 23, 28, 0.14) var(--fill));
+}
+.step-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -8px;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid #15171c;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+.step-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid #15171c;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+/* ------------------------------------------------------------------ print: instruction booklet */
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 0;
+  }
+  body {
+    background: #fff;
+  }
+  .screen-only {
+    display: none !important;
+  }
+  .print-only {
+    display: block;
+  }
+  .print-page {
+    width: 297mm;
+    height: 210mm;
+    page-break-after: always;
+    break-after: page;
+    overflow: hidden;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

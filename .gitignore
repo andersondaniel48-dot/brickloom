@@ -1,0 +1,12 @@
+node_modules
+dist
+dev-dist
+*.local
+.env
+
+# Downloaded datasets and everything generated from them (npm run data)
+data
+public/catalog
+public/ldraw
+public/sets
+.cache
