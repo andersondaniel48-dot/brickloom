@@ -31,10 +31,6 @@ jobs:
 
       - run: npm ci
 
-      # Works out the address the site is served from (/<repository>/ for a project site).
-      - id: pages
-        uses: actions/configure-pages@v6
-
       # The datasets (about 165 MB) are downloaded once a month rather than on every deploy.
       - id: month
         run: echo "stamp=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
@@ -47,6 +43,11 @@ jobs:
         run: npm run data
 
       - run: npm test
+
+      # Works out the address the site is served from (/<repository>/ for a project site).
+      # Fails if Pages has not been switched on in the repository settings.
+      - id: pages
+        uses: actions/configure-pages@v6
 
       - run: npm run build
         env:
