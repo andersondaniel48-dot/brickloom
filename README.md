@@ -115,12 +115,18 @@ the app asks whether to combine them or keep one. Signing out leaves the device'
 
 ## How it works
 
-**Scanning.** A photo is segmented in the browser (`src/lib/scan/segment.ts`): the background is
-modelled from the image border, and pixels that differ from it, or that sit on a sharp edge, become
-pieces. Each piece is cropped and identified by [Brickognize](https://brickognize.com), several at
-a time. Its color is measured from the photo and matched against the official palette, preferring
-colors that part was actually produced in. Works best with pieces spread on a plain surface, not
-touching.
+**Scanning.** The camera is opened at the highest resolution it offers, and the sharpest of a few
+consecutive frames is kept. The photo is segmented in the browser (`src/lib/scan/segment.ts`): the
+surface is modelled as whatever most of the picture looks like, with its lighting fitted as a smooth
+gradient, and pixels that differ from it in color, or sit on a sharp edge, become pieces. Blobs are
+split where the color changes or the outline pinches to a neck. Each piece is cropped and
+identified by [Brickognize](https://brickognize.com) (`src/lib/scan/session.ts`), several at a
+time, paced to stay under the rate that service accepts and retried when it refuses. Where the
+recognizer's answer does not cover everything in a region, the rest is cut out and identified too,
+which is how pieces of the same color that touch are told apart. The color comes from the
+recognizer's own reading combined with a measurement from the photo, the colors the part was
+actually produced in, and how common each color is. Works best with pieces spread on a plain
+surface, not touching.
 
 **Sets.** Instead of scanning, a whole set can be added by its number or name. The data build turns
 Rebrickable's set inventories, including the parts of each set's minifigures, into 256 small files

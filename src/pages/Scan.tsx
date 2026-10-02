@@ -8,27 +8,29 @@ import { useCatalog, type PartInfo } from '../lib/catalog.ts';
 import { addPieces, type NewPiece } from '../lib/db.ts';
 import type { Candidate } from '../lib/scan/identify.ts';
 import type { Region } from '../lib/scan/segment.ts';
-import { findPieces, matchColor, runScan, sampleTray, toCanvas, type Detection } from '../lib/scan/session.ts';
+import { captureStill, findPieces, matchColor, runScan, sampleTray, toCanvas, type Detection } from '../lib/scan/session.ts';
 
 type CameraState = 'starting' | 'live' | 'denied' | 'unavailable';
 
 /** Largest box of the given aspect ratio that fits inside the element the returned ref is attached to. */
 function useFit(aspect: number) {
-  const ref = useRef<HTMLDivElement>(null);
+  // Held in state so that a replaced element is measured and observed afresh.
+  const [el, ref] = useState<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
-    const el = ref.current;
     if (!el) return;
     const measure = () => {
       const w = el.clientWidth;
       const h = el.clientHeight;
+      // A hidden element measures as nothing. Keep the last real size, so it is right when shown again.
+      if (!w || !h) return;
       setSize(w / h > aspect ? { width: h * aspect, height: h } : { width: w, height: w / aspect });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [aspect]);
+  }, [el, aspect]);
   return [ref, size] as const;
 }
 
@@ -38,8 +40,10 @@ export function ScanPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const scanAbort = useRef<AbortController | null>(null);
+  const capturing = useRef(false);
 
   const [camera, setCamera] = useState<CameraState>('starting');
+  const [attempt, setAttempt] = useState(0);
   const [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const [torch, setTorch] = useState<boolean | null>(null); // null: not supported
   const [aspect, setAspect] = useState(4 / 3);
@@ -56,8 +60,9 @@ export function ScanPage() {
     streamRef.current = null;
   }, []);
 
+  // The camera stays open for as long as this page does, including while a scan is being reviewed:
+  // "Retake" is then instant, and phones that ask for permission every time the camera opens ask once.
   useEffect(() => {
-    if (photo) return; // reviewing a capture: the camera is paused
     if (!navigator.mediaDevices?.getUserMedia) {
       setCamera('unavailable');
       return;
@@ -65,16 +70,22 @@ export function ScanPage() {
     let cancelled = false;
     setCamera('starting');
     navigator.mediaDevices
-      .getUserMedia({ audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1440 } } })
+      // As much detail as the camera will give: recognition depends on how many pixels each piece gets.
+      .getUserMedia({ audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 3840 }, height: { ideal: 2160 } } })
       .then(async (stream) => {
         if (cancelled) return stream.getTracks().forEach((t) => t.stop());
         streamRef.current = stream;
         const video = videoRef.current!;
         video.srcObject = stream;
         await video.play().catch(() => undefined);
+        if (cancelled) return;
         setAspect(video.videoWidth / video.videoHeight || 4 / 3);
-        const capabilities = stream.getVideoTracks()[0]?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
+        const track = stream.getVideoTracks()[0];
+        const capabilities = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean; focusMode?: string[] }) | undefined;
         setTorch(capabilities?.torch ? false : null);
+        if (capabilities?.focusMode?.includes('continuous')) {
+          void track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => undefined);
+        }
         setCamera('live');
       })
       .catch((err: DOMException) => !cancelled && setCamera(err.name === 'NotAllowedError' ? 'denied' : 'unavailable'));
@@ -82,7 +93,28 @@ export function ScanPage() {
       cancelled = true;
       stopCamera();
     };
-  }, [facing, photo, stopCamera]);
+  }, [facing, attempt, stopCamera]);
+
+  // The picture changes shape when the phone is turned.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onResize = () => video.videoWidth && video.videoHeight && setAspect(video.videoWidth / video.videoHeight);
+    video.addEventListener('resize', onResize);
+    return () => video.removeEventListener('resize', onResize);
+  }, []);
+
+  // Phones cut the camera off while the app is in the background. Pick it back up on return.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden || !streamRef.current) return;
+      const track = streamRef.current.getVideoTracks()[0];
+      if (!track || track.readyState !== 'live') setAttempt((n) => n + 1);
+      else void videoRef.current?.play().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   // Live preview of what a capture would pick up.
   useEffect(() => {
@@ -90,7 +122,7 @@ export function ScanPage() {
     const timer = window.setInterval(() => {
       const video = videoRef.current;
       if (video && video.readyState >= 2 && !document.hidden) setLive(findPieces(video, 320));
-    }, 280);
+    }, 250);
     return () => window.clearInterval(timer);
   }, [camera, photo]);
 
@@ -109,7 +141,6 @@ export function ScanPage() {
       const abort = new AbortController();
       scanAbort.current = abort;
       setPhoto(canvas);
-      setAspect(canvas.width / canvas.height);
       setDetections([]);
       setBusy(true);
       void runScan(canvas, catalog, setDetections, abort.signal).finally(() => !abort.signal.aborted && setBusy(false));
@@ -117,10 +148,16 @@ export function ScanPage() {
     [catalog],
   );
 
-  const capture = () => {
+  const capture = async () => {
     const video = videoRef.current;
-    if (!video || video.readyState < 2) return;
-    scan(toCanvas(video));
+    if (!video || video.readyState < 2 || capturing.current) return;
+    capturing.current = true;
+    navigator.vibrate?.(12);
+    try {
+      scan(await captureStill(video));
+    } finally {
+      capturing.current = false;
+    }
   };
 
   const onFile = async (file: File | undefined) => {
@@ -140,6 +177,8 @@ export function ScanPage() {
     setDetections([]);
     setBusy(false);
     setLive([]);
+    // Some browsers pause a video while it is hidden.
+    void videoRef.current?.play().catch(() => undefined);
   };
 
   useEffect(() => () => scanAbort.current?.abort(), []);
@@ -168,17 +207,10 @@ export function ScanPage() {
     <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => (void onFile(e.target.files?.[0]), (e.target.value = ''))} />
   );
 
-  if (photo) {
-    return (
-      <>
-        {fileInput}
-        <Review photo={photo} aspect={aspect} detections={detections} busy={busy} total={total} onUpdate={update} onRetake={reset} onAdd={addAll} />
-      </>
-    );
-  }
-
   return (
-    <div className="relative flex h-dvh flex-col bg-[#0b0c0f] text-white lg:h-dvh">
+    <>
+    {photo && <Review photo={photo} detections={detections} busy={busy} total={total} onUpdate={update} onRetake={reset} onAdd={addAll} />}
+    <div className={cx('relative h-dvh flex-col bg-[#0b0c0f] text-white', photo ? 'hidden' : 'flex')}>
       {fileInput}
 
       {/* Viewfinder */}
@@ -283,14 +315,27 @@ export function ScanPage() {
         )}
       </div>
     </div>
+    </>
   );
 }
 
 // ---------------------------------------------------------------- review
 
+/** The captured photo, drawn at screen size. Much quicker than encoding a full-resolution capture as an image. */
+function Photo({ source, className }: { source: HTMLCanvasElement; className?: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current!;
+    const scale = Math.min(1, 1400 / Math.max(source.width, source.height));
+    canvas.width = Math.round(source.width * scale);
+    canvas.height = Math.round(source.height * scale);
+    canvas.getContext('2d')!.drawImage(source, 0, 0, canvas.width, canvas.height);
+  }, [source]);
+  return <canvas ref={ref} role="img" aria-label="Your scan" className={className} />;
+}
+
 function Review({
   photo,
-  aspect,
   detections,
   busy,
   total,
@@ -299,7 +344,6 @@ function Review({
   onAdd,
 }: {
   photo: HTMLCanvasElement;
-  aspect: number;
   detections: Detection[];
   busy: boolean;
   total: number;
@@ -308,7 +352,7 @@ function Review({
   onAdd: () => void;
 }) {
   const catalog = useCatalog();
-  const [photoUrl] = useState(() => photo.toDataURL('image/jpeg', 0.85));
+  const aspect = photo.width / photo.height;
   const [matching, setMatching] = useState<number | null>(null);
   const [coloring, setColoring] = useState<number | null>(null);
   const [focus, setFocus] = useState<number | null>(null);
@@ -322,7 +366,7 @@ function Review({
     const next: Detection = { ...d, included: true, status: 'done' };
     if (patch.manual) {
       // A part picked from the catalog by hand becomes the accepted candidate.
-      const manual: Candidate = { externalId: patch.manual.id, name: patch.manual.name, score: 1, image: '', kind: 'part', part: patch.manual };
+      const manual: Candidate = { externalId: patch.manual.id, name: patch.manual.name, score: 1, image: '', part: patch.manual };
       next.candidates = [manual, ...d.candidates.filter((c) => c.part?.id !== patch.manual!.id)];
       next.choice = 0;
     } else if (patch.choice !== undefined) {
@@ -339,8 +383,9 @@ function Review({
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-44 pt-5 sm:px-8 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-8 lg:pb-28 lg:pt-8">
       {/* The photo, with each found piece numbered */}
       <div className="lg:sticky lg:top-8 lg:self-start">
-        <div className="relative mx-auto overflow-hidden rounded-3xl bg-black shadow-card" style={{ aspectRatio: aspect, maxHeight: '44dvh' }}>
-          <img src={photoUrl} alt="Your scan" className="size-full object-contain" />
+        {/* Sized so the box always has exactly the photo's shape: the piece outlines are placed as fractions of it. */}
+        <div className="relative mx-auto overflow-hidden rounded-3xl bg-black shadow-card" style={{ aspectRatio: aspect, width: `min(100%, calc(44dvh * ${aspect}))` }}>
+          <Photo source={photo} className="block size-full" />
           {busy && <div className="pointer-events-none absolute inset-x-0 top-0 h-1/4 animate-[scan-sweep_1.6s_ease-in-out_infinite] bg-gradient-to-b from-transparent via-accent/35 to-transparent" />}
           {detections.length > 1 &&
             detections.map((d) => (
@@ -401,6 +446,7 @@ function Review({
                   focused={focus === d.id}
                   numbered={detections.length > 1}
                   onMatch={() => setMatching(d.id)}
+                  onChoose={(choice) => void choose(d, { choice })}
                   onColor={() => setColoring(d.id)}
                   onQty={(qty) => onUpdate(d.id, { qty })}
                   onToggle={() => onUpdate(d.id, { included: !d.included })}
@@ -459,6 +505,7 @@ function DetectionCard({
   focused,
   numbered,
   onMatch,
+  onChoose,
   onColor,
   onQty,
   onToggle,
@@ -467,6 +514,7 @@ function DetectionCard({
   focused: boolean;
   numbered: boolean;
   onMatch: () => void;
+  onChoose: (choice: number) => void;
   onColor: () => void;
   onQty: (qty: number) => void;
   onToggle: () => void;
@@ -475,11 +523,20 @@ function DetectionCard({
   const candidate: Candidate | undefined = d.candidates[d.choice];
   const color = d.color !== null ? catalog.color(d.color) : null;
   const unsure = d.status === 'done' && candidate && candidate.score < 0.6;
+  // When the best match is shaky, or a runner-up is nearly as good, offer the runners-up right on the card.
+  const runnersUp = candidate
+    ? d.candidates
+        .map((c, i) => ({ c, i }))
+        .filter(({ c, i }) => i !== d.choice && c.image && (unsure || candidate.score - c.score < 0.12))
+        .slice(0, 3)
+    : [];
 
   return (
-    <div className={cx('card flex items-stretch gap-3 p-2.5 transition-[opacity,box-shadow]', !d.included && 'opacity-55', focused && 'ring-2 ring-ink')}>
+    <div className={cx('card p-2.5 transition-[opacity,box-shadow]', !d.included && 'opacity-55', focused && 'ring-2 ring-ink')}>
+    {/* On a phone the color and count drop to a row of their own, leaving the width to the name. */}
+    <div className="flex flex-wrap items-stretch gap-x-3 gap-y-2 sm:flex-nowrap">
       {/* What the camera saw */}
-      <div className="relative size-[72px] shrink-0 overflow-hidden rounded-2xl bg-black">
+      <div className="relative size-16 shrink-0 overflow-hidden rounded-2xl bg-black sm:size-[72px]">
         <img src={d.crop} alt="" className="size-full object-cover" />
         {numbered && <span className="tabular absolute left-1 top-1 flex size-5 items-center justify-center rounded-md bg-accent text-[11px] font-bold text-accent-ink">{d.id + 1}</span>}
       </div>
@@ -503,7 +560,7 @@ function DetectionCard({
         <>
           {/* What it was matched to */}
           <button type="button" onClick={onMatch} className="group flex min-w-0 flex-1 items-center gap-3 rounded-2xl text-left">
-            <span className="studs-fine size-[72px] shrink-0 rounded-2xl bg-surface-2">
+            <span className="studs-fine size-16 shrink-0 rounded-2xl bg-surface-2 sm:size-[72px]">
               {candidate.part ? (
                 <PartThumb part={candidate.part.id} color={d.color ?? 71} image={candidate.image} eager className="size-full p-1.5" />
               ) : (
@@ -530,7 +587,7 @@ function DetectionCard({
             <ChevronRight className="size-4 shrink-0 text-ink-3 transition-transform group-hover:translate-x-0.5" />
           </button>
 
-          <div className="flex shrink-0 flex-col items-end justify-between gap-1.5">
+          <div className="flex shrink-0 basis-full items-center justify-end gap-3 sm:basis-auto sm:flex-col sm:items-end sm:justify-between sm:gap-1.5">
             <div className="flex items-center gap-1">
               {color && (
                 <button type="button" onClick={onColor} title={`${color.name} (tap to change)`} className="flex size-8 items-center justify-center rounded-full hover:bg-ink/5">
@@ -545,6 +602,24 @@ function DetectionCard({
           </div>
         </>
       )}
+    </div>
+    {runnersUp.length > 0 && (
+      <div className="mt-2.5 flex items-center gap-2 overflow-x-auto border-t border-line pt-2.5">
+        <span className="shrink-0 text-xs font-semibold text-ink-3">Or is it</span>
+        {runnersUp.map(({ c, i }) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onChoose(i)}
+            title={c.part?.name ?? c.name}
+            className="flex shrink-0 items-center gap-2 rounded-full border border-line py-1 pl-1 pr-3 text-xs font-semibold hover:border-line-strong"
+          >
+            <img src={c.image} alt="" loading="lazy" className="size-9 rounded-full bg-white object-contain p-0.5" />
+            <span className="font-mono">{c.part?.id ?? c.externalId}</span>
+          </button>
+        ))}
+      </div>
+    )}
     </div>
   );
 }
@@ -599,7 +674,7 @@ function MatchPicker({ detection, onChoose }: { detection: Detection; onChoose: 
                     <span className="mt-0.5 flex items-center gap-2 text-xs text-ink-3">
                       <span className="font-mono">{c.part?.id ?? c.externalId}</span>
                       <span className="tabular">{Math.round(c.score * 100)}%</span>
-                      {!c.part && <span className="rounded-full bg-ink/7 px-1.5 py-0.5 capitalize">{c.kind === 'fig' ? 'Minifigure' : c.kind}</span>}
+                      {!c.part && <span className="rounded-full bg-ink/7 px-1.5 py-0.5">Not in the catalog</span>}
                     </span>
                   </span>
                   {i === detection.choice && <Check className="size-5 shrink-0" strokeWidth={3} />}

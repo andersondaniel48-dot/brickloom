@@ -30,12 +30,16 @@ interface PartColumns {
   geo: (0 | 1 | string)[];
 }
 
+const normalizeName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
 export class Catalog {
   readonly colors: Map<number, CatalogColor>;
   readonly categories: Map<number, string>;
   private readonly index = new Map<string, number>();
   private readonly haystack: string[];
   private partColors: Promise<Record<string, number[]>> | null = null;
+  private colorNames: Map<string, CatalogColor> | null = null;
+  private colorShare: Promise<Map<number, number>> | null = null;
   private design: Promise<DesignCatalog> | null = null;
 
   constructor(
@@ -131,8 +135,25 @@ export class Catalog {
 
   /** Colors a part was ever produced in (loaded on first use). */
   async colorsFor(partId: string): Promise<number[]> {
-    this.partColors ??= fetch(asset('catalog/part-colors.json')).then((r) => r.json());
-    return (await this.partColors)[partId] ?? [];
+    return (await this.allPartColors())[partId] ?? [];
+  }
+
+  private allPartColors(): Promise<Record<string, number[]>> {
+    return (this.partColors ??= fetch(asset('catalog/part-colors.json')).then((r) => r.json()));
+  }
+
+  /**
+   * How common each color is, from 0 to 1: how many different parts were made in it, set against
+   * the most widely used color. Light bluish gray is near 1; chrome gold is near 0.
+   */
+  colorUse(): Promise<Map<number, number>> {
+    this.colorShare ??= this.allPartColors().then((all) => {
+      const counts = new Map<number, number>();
+      for (const colors of Object.values(all)) for (const c of colors) counts.set(c, (counts.get(c) ?? 0) + 1);
+      const most = Math.max(1, ...counts.values());
+      return new Map([...counts].map(([color, n]) => [color, Math.sqrt(n / most)]));
+    });
+    return this.colorShare;
   }
 
   /** What a designer needs from the catalog, including how printed parts map to plain ones (loaded on first use). */
@@ -154,15 +175,33 @@ export class Catalog {
    * onto ours. Most ids are shared; where a mold has lettered variants here, the most common wins.
    */
   resolveExternalId(externalId: string): PartInfo | null {
-    const exact = this.part(externalId) ?? this.part(externalId.toLowerCase());
-    if (exact) return exact;
-    let best: PartInfo | null = null;
-    const prefix = externalId.toLowerCase();
-    for (const suffix of ['a', 'b', 'c', 'd']) {
-      const candidate = this.part(prefix + suffix);
-      if (candidate && (!best || candidate.popularity > best.popularity)) best = candidate;
+    const lookup = (id: string): PartInfo | null => {
+      const exact = this.part(id);
+      if (exact) return exact;
+      let best: PartInfo | null = null;
+      for (const suffix of ['a', 'b', 'c', 'd']) {
+        const candidate = this.part(id + suffix);
+        if (candidate && (!best || candidate.popularity > best.popularity)) best = candidate;
+      }
+      return best;
+    };
+    const id = externalId.toLowerCase();
+    return (
+      this.part(externalId) ??
+      lookup(id) ??
+      // "3660old" / "4085new": the other catalog's way of naming mold revisions.
+      lookup(id.replace(/(old|new)$/, '')) ??
+      // Printed and patterned parts are numbered differently in the two catalogs; fall back to the plain part.
+      lookup(id.replace(/(pb|px|pr|pat)\d.*$/, ''))
+    );
+  }
+
+  /** The catalog color with this name, ignoring case, spaces and punctuation. Names are shared with the recognition service. */
+  colorByName(name: string): CatalogColor | null {
+    if (!this.colorNames) {
+      this.colorNames = new Map(this.colorList.map((c) => [normalizeName(c.name), c]));
     }
-    return best;
+    return this.colorNames.get(normalizeName(name)) ?? null;
   }
 }
 
