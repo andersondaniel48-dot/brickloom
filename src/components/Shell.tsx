@@ -1,7 +1,8 @@
 import { Blocks, Home, LayoutGrid, ScanLine, Settings, Sparkles, type LucideIcon } from 'lucide-react';
-import { NavLink, Outlet, useLocation } from 'react-router';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useCatalog } from '../lib/catalog.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
+import { AccountChip } from './Account.tsx';
 import { Logo, cx } from './ui.tsx';
 
 const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
@@ -16,6 +17,7 @@ export function Shell() {
   const catalog = useCatalog();
   const stats = useStats(useInventory(), catalog);
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const immersive = pathname === '/scan';
 
   return (
@@ -51,6 +53,7 @@ export function Shell() {
               pieces in {stats.colors} color{stats.colors === 1 ? '' : 's'}
             </div>
           </div>
+          <AccountChip onOpen={() => navigate('/settings')} />
           <NavLink
             to="/settings"
             className={({ isActive }) =>

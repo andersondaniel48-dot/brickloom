@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Route, Routes } from 'react-router';
+import { MergeDialog } from './components/Account.tsx';
 import { Shell } from './components/Shell.tsx';
 import { Button, Logo, Toasts } from './components/ui.tsx';
 import { useCatalogStore } from './lib/catalog.ts';
@@ -68,6 +69,7 @@ export function App() {
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>
+      <MergeDialog />
       <Toasts />
     </>
   );

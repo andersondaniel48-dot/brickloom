@@ -68,6 +68,51 @@ app, once on each device. The key is kept in that browser only and sent only to 
 with a spending limit. Without a key the Create tab falls back to a small offline builder that only
 knows towers, houses and pyramids.
 
+### Accounts: Sign in with Google (optional)
+
+Out of the box, everything stays on each device. To let people sign in with Google and have their
+collection and builds saved to their account, connect the app to a free
+[Firebase](https://console.firebase.google.com) project. Until `src/cloud-config.ts` is filled in,
+the app shows no sign-in at all.
+
+1. In the Firebase console, **create a project**.
+2. **Build > Authentication > Get started > Sign-in method**: enable **Google**. After saving, open
+   the Google provider again and copy the **Web client ID** shown under "Web SDK configuration".
+3. **Authentication > Settings > Authorized domains**: add the site's domain, for example
+   `<you>.github.io`.
+4. **Build > Firestore Database > Create database** (production mode, any location), then open its
+   **Rules** tab, replace the contents with the following and publish:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{uid}/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+
+   These rules are what keep each person's data private: nobody can read or write anything but
+   their own.
+5. **Project settings > General > Your apps > Add app > Web**: register an app (no hosting) and copy
+   the `firebaseConfig` values it shows.
+6. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials), with the same
+   project selected, open the OAuth client named **Web client (auto created by Google Service)**
+   and add:
+   - under **Authorized JavaScript origins**: `https://<you>.github.io` (and `http://localhost:5173`
+     for development)
+   - under **Authorized redirect URIs**: the app's full address with a trailing slash,
+     `https://<you>.github.io/<repository>/` (and `http://localhost:5173/`)
+7. Put the values from steps 2 and 5 into `src/cloud-config.ts` and publish. None of them is secret.
+
+How saving behaves: the device keeps its own copy and works offline; changes are saved to the
+account a moment after they are made, and other devices pick them up when the app is opened or
+brought back to the front. If the same thing was changed on two devices, the most recent save wins.
+The first time a device that already has a collection signs in to an account that already has one,
+the app asks whether to combine them or keep one. Signing out leaves the device's copy in place.
+
 ## How it works
 
 **Scanning.** A photo is segmented in the browser (`src/lib/scan/segment.ts`): the background is
@@ -102,9 +147,13 @@ sideways studs) stay in your collection but are not used in designs.
 to attach to. The instruction viewer shows each step in 3D with the pieces needed, and can print the
 whole build as a booklet or PDF.
 
-Your collection and builds are stored in the browser (IndexedDB) and never leave the device, apart
-from the piece photos sent to Brickognize for identification and the inventory sent to Anthropic
-when you ask for a design.
+**Accounts.** With Firebase configured, `src/lib/cloud/` signs people in with Google (by full-page
+redirect, which is the only flow that also works in an app installed on an iPhone) and copies the
+device's database to and from a small private area of Firestore per person.
+
+Your collection and builds are stored in the browser (IndexedDB). They leave the device only as the
+piece photos sent to Brickognize for identification, the inventory sent to Anthropic when you ask
+for a design, and, if you sign in, the copy saved to your account.
 
 ## Commands
 

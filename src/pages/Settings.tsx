@@ -1,7 +1,9 @@
 import { Check, Download, KeyRound, Monitor, Moon, PackageOpen, Share, Smartphone, Sun, Trash2, Upload } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
+import { AccountSection } from '../components/Account.tsx';
 import { Button, PageHeader, Segmented, toast } from '../components/ui.tsx';
 import { useCatalog } from '../lib/catalog.ts';
+import { accountsEnabled, useAccount } from '../lib/cloud/index.ts';
 import { addPieces, db, type NewPiece } from '../lib/db.ts';
 import { isIOS, useInstall } from '../lib/install.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
@@ -15,6 +17,7 @@ export function SettingsPage() {
   const { theme, setTheme, apiKey, setApiKey } = useSettings();
   const [keyDraft, setKeyDraft] = useState(apiKey);
   const { available, installed, install } = useInstall();
+  const signedIn = useAccount((s) => Boolean(s.user));
   const fileRef = useRef<HTMLInputElement>(null);
 
   const exportCollection = () => {
@@ -49,6 +52,8 @@ export function SettingsPage() {
   return (
     <div className="mx-auto max-w-2xl">
       <PageHeader title="Settings" />
+
+      <AccountSection />
 
       <Section title="Appearance">
         <Segmented<Theme>
@@ -130,7 +135,7 @@ export function SettingsPage() {
         </p>
       </Section>
 
-      <Section title="Your collection" description={`${stats.pieces.toLocaleString()} pieces, stored only on this device.`}>
+      <Section title="Your collection" description={`${stats.pieces.toLocaleString()} pieces, ${signedIn ? 'stored on this device and saved to your account' : 'stored only on this device'}.`}>
         <div className="flex flex-wrap gap-2.5">
           <Button onClick={exportCollection} disabled={!rows?.length}>
             <Download className="size-4" /> Export
@@ -160,6 +165,7 @@ export function SettingsPage() {
             <ExternalLink href="https://rebrickable.com">Rebrickable</ExternalLink>. 3D part geometry comes from the{' '}
             <ExternalLink href="https://www.ldraw.org">LDraw</ExternalLink> parts library (CC BY 4.0). Scanned pieces are identified by{' '}
             <ExternalLink href="https://brickognize.com">Brickognize</ExternalLink>, which receives a cropped photo of each piece.
+            {accountsEnabled && ' If you sign in, your collection and builds are also stored in Google Firebase under your account, where only you can read them.'}
           </p>
           <p className="text-sm text-ink-3">LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize or endorse this app.</p>
         </div>

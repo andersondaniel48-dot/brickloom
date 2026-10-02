@@ -6,6 +6,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import { App } from './App.tsx';
+import { initAccounts } from './lib/cloud/index.ts';
+
+// Before the router reads the address: a returning Google sign-in arrives in the address fragment.
+initAccounts();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
