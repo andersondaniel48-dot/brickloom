@@ -98,6 +98,14 @@
   --breakpoint-xs: 26rem;
 }
 
+/* A phone on its side: plenty of width, very little height. The tab bar becomes a rail on the left. */
+@custom-variant short (@media (orientation: landscape) and (max-height: 540px) and (max-width: 1023.98px));
+
+:root {
+  /* Room taken by that rail, clear of a notch. */
+  --rail: calc(max(env(safe-area-inset-left), 0.5rem) + 4.5rem);
+}
+
 /* ------------------------------------------------------------------ base */
 
 html {
@@ -174,6 +182,12 @@ button:disabled {
 
 @utility safe-bottom {
   padding-bottom: max(env(safe-area-inset-bottom), 0.75rem);
+}
+
+/* Keeps content clear of the rail on the left, and of a notch on the right. */
+@utility rail-space {
+  padding-left: var(--rail);
+  padding-right: env(safe-area-inset-right);
 }
 
 @utility tabular {

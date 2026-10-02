@@ -2,14 +2,16 @@
 // Pure typed-array image processing, fast enough to run on live camera frames.
 //
 // The approach, in order:
-//   1. Model the background. The surface is whatever most of the picture looks like; its color is
-//      fitted as a smooth surface so uneven lighting and vignetting are not mistaken for pieces.
-//   2. Measure how noisy that background is (paper is quiet, wood grain is not) and set every
+//   1. Model the surface. It is whatever most of the picture looks like; its color is fitted as a
+//      smooth gradient so uneven lighting and vignetting are not mistaken for pieces.
+//   2. Measure how noisy that surface is (paper is quiet, wood grain is not) and set every
 //      threshold relative to it.
-//   3. Mark pixels that are "solid" evidence of a piece (a different color from the background, or
+//   3. Mark pixels that are "solid" evidence of a piece (a different color from the surface, or
 //      much darker or lighter than it) and pixels on a sharp edge. Soft shadows are neither.
 //   4. Close outlines, fill what they enclose, and take connected blobs.
-//   5. Split blobs that are really several touching pieces: first where the color changes, then
+//   5. A very large blob may be a second surface with pieces of its own (a sheet of paper on a
+//      desk, the inside of a tray): if it looks like one, search inside it the same way.
+//   6. Split blobs that are really several touching pieces: first where the color changes, then
 //      where the shape pinches to a narrow neck.
 
 export interface Region {
@@ -340,6 +342,9 @@ function splitByColor(blob: number[], planes: Planes, scratch: Scratch, minArea:
     }
   }
   const solidCount = colored + dark + light;
+  // Shares are judged against the size of a piece. Part of the blob may be far larger than any
+  // piece (the floor beyond the table, with a brick lying against it), and must not set the bar.
+  const cap = minArea * 64;
   // Too little to go on (a white piece on white paper is found by its outline alone).
   if (solidCount < blob.length * 0.25) return [blob];
 
@@ -350,12 +355,12 @@ function splitByColor(blob: number[], planes: Planes, scratch: Scratch, minArea:
   }
   const peaks: number[] = [];
   const candidates = Array.from({ length: HUE_BINS }, (_, b) => b)
-    .filter((b) => smooth[b] > 0 && smooth[b] >= colored * 0.06 && smooth[b] >= smooth[(b + 1) % HUE_BINS] && smooth[b] >= smooth[(b + HUE_BINS - 1) % HUE_BINS])
+    .filter((b) => smooth[b] > 0 && smooth[b] >= Math.min(colored, cap) * 0.06 && smooth[b] >= smooth[(b + 1) % HUE_BINS] && smooth[b] >= smooth[(b + HUE_BINS - 1) % HUE_BINS])
     .sort((a, b) => smooth[b] - smooth[a]);
   const apart = (a: number, b: number) => Math.min(Math.abs(a - b), HUE_BINS - Math.abs(a - b));
   for (const c of candidates) if (peaks.every((p) => apart(p, c) >= 5)) peaks.push(c);
 
-  const most = Math.max(colored, dark, light);
+  const most = Math.min(Math.max(colored, dark, light), cap);
   const classes = peaks.length + (dark > most * MIN_SHARE ? 1 : 0) + (light > most * MIN_SHARE ? 1 : 0);
   if (classes < 2) return [blob];
 
@@ -373,25 +378,73 @@ function splitByColor(blob: number[], planes: Planes, scratch: Scratch, minArea:
     }
   }
   const parts = components(label, blob, w, h, false, scratch);
-  const largest = parts.reduce((most, p) => Math.max(most, p.length), 0);
+  const largest = Math.min(parts.reduce((most, p) => Math.max(most, p.length), 0), cap);
   const big = parts.filter((p) => p.length >= Math.max(minArea * 0.6, largest * MIN_SHARE));
   for (const i of blob) label[i] = 0;
   if (big.length < 2) return [blob];
 
   // Highlights, edges, shadows and other fragments join whichever large part they touch.
   big.forEach((part, g) => part.forEach((i) => (label[i] = g + 1)));
-  return claim(blob, big.length, w, h, scratch).filter((p) => p.length);
+  return absorbEnclosed(claim(blob, big.length, w, h, scratch).filter((p) => p.length), w, h, scratch);
 }
 
 /**
- * Splits a blob where it pinches to a narrow neck: two bricks of the same color touching at a
- * corner. The neck has to be much thinner than what it joins, so that a single piece with a
- * waist (an arch, a bracket) stays whole.
+ * Joins a part to its neighbour when most of its outline runs along that neighbour rather than
+ * along the surface. Such a part is not a piece lying beside another: it is something on or in a
+ * piece, like the dark inside of a pin hole, a print, or a stud in shadow.
  */
-function splitByShape(blob: number[], planes: Planes, scratch: Scratch, minArea: number, rounds = 2): number[][] {
-  const { w, h } = planes;
-  const { member, depth, label } = scratch;
-  // Distance of each pixel from the edge of the blob, by peeling layers off (city-block distance).
+function absorbEnclosed(parts: number[][], w: number, h: number, scratch: Scratch): number[][] {
+  if (parts.length < 2) return parts;
+  const { label } = scratch;
+  parts.forEach((part, g) => part.forEach((i) => (label[i] = g + 1)));
+  // For every part: how much of its outline is open, and how much runs along each other part.
+  const open = new Array<number>(parts.length).fill(0);
+  const along = parts.map(() => new Map<number, number>());
+  parts.forEach((part, g) => {
+    for (const i of part) {
+      const x = i % w;
+      const y = (i / w) | 0;
+      for (let side = 0; side < 4; side++) {
+        const inFrame = side === 0 ? x > 0 : side === 1 ? x < w - 1 : side === 2 ? y > 0 : y < h - 1;
+        const other = inFrame ? label[side === 0 ? i - 1 : side === 1 ? i + 1 : side === 2 ? i - w : i + w] : 0;
+        if (other === g + 1) continue;
+        if (other) along[g].set(other - 1, (along[g].get(other - 1) ?? 0) + 1);
+        else open[g]++;
+      }
+    }
+  });
+  for (const part of parts) for (const i of part) label[i] = 0;
+
+  // Smallest first, so that a part inside a part inside a part ends up in the outermost.
+  const into = parts.map((_, g) => g);
+  const root = (g: number): number => (into[g] === g ? g : (into[g] = root(into[g])));
+  for (const g of parts.map((_, i) => i).sort((a, b) => parts[a].length - parts[b].length)) {
+    let shared = 0;
+    let host = -1;
+    let most = 0;
+    for (const [other, length] of along[g]) {
+      shared += length;
+      if (length > most) (most = length), (host = other);
+    }
+    if (host >= 0 && shared > (shared + open[g]) * 0.8 && root(host) !== g) into[g] = root(host);
+  }
+  const out = new Map<number, number[]>();
+  parts.forEach((part, g) => {
+    const r = root(g);
+    const joined = out.get(r);
+    if (joined) for (const i of part) joined.push(i);
+    else out.set(r, part);
+  });
+  return [...out.values()];
+}
+
+/**
+ * Measures how deep inside a blob each of its pixels lies, by peeling layers off its outline
+ * (city-block distance). Fills `scratch.depth` for the blob's pixels, which the caller must zero
+ * again, and returns the depth of the deepest pixel.
+ */
+function peel(blob: number[], w: number, h: number, scratch: Scratch): number {
+  const { member, depth } = scratch;
   for (const i of blob) member[i] = 1;
   let layer = blob.filter((i) => {
     const x = i % w;
@@ -403,16 +456,27 @@ function splitByShape(blob: number[], planes: Planes, scratch: Scratch, minArea:
     for (const i of layer) depth[i] = level;
     const next: number[] = [];
     for (const i of layer) {
-      // Not on the image border here, or it would have been in the first layer.
-      if (member[i - 1] && !depth[i - 1]) (depth[i - 1] = -1), next.push(i - 1);
-      if (member[i + 1] && !depth[i + 1]) (depth[i + 1] = -1), next.push(i + 1);
-      if (member[i - w] && !depth[i - w]) (depth[i - w] = -1), next.push(i - w);
-      if (member[i + w] && !depth[i + w]) (depth[i + w] = -1), next.push(i + w);
+      const x = i % w;
+      if (x > 0 && member[i - 1] && !depth[i - 1]) (depth[i - 1] = -1), next.push(i - 1);
+      if (x < w - 1 && member[i + 1] && !depth[i + 1]) (depth[i + 1] = -1), next.push(i + 1);
+      if (i >= w && member[i - w] && !depth[i - w]) (depth[i - w] = -1), next.push(i - w);
+      if (i < (h - 1) * w && member[i + w] && !depth[i + w]) (depth[i + w] = -1), next.push(i + w);
     }
     layer = next;
   }
-  const thickest = level;
   for (const i of blob) member[i] = 0;
+  return level;
+}
+
+/**
+ * Splits a blob where it pinches to a narrow neck: two bricks of the same color touching at a
+ * corner. The neck has to be much thinner than what it joins, so that a single piece with a
+ * waist (an arch, a bracket) stays whole.
+ */
+function splitByShape(blob: number[], planes: Planes, scratch: Scratch, minArea: number, rounds = 2): number[][] {
+  const { w, h } = planes;
+  const { depth, label } = scratch;
+  const thickest = peel(blob, w, h, scratch);
 
   let result: number[][] | null = null;
   // Shave the blob down one layer at a time until it falls apart into thick cores.
@@ -439,6 +503,394 @@ function splitByShape(blob: number[], planes: Planes, scratch: Scratch, minArea:
   return rounds > 1 ? result.flatMap((part) => splitByShape(part, planes, scratch, minArea, rounds - 1)) : result;
 }
 
+/**
+ * The thick parts of a blob, without whatever thin thing joins them to each other or to the edge
+ * of the picture. A brick lying against the line where the table ends comes out as the brick.
+ */
+function thickParts(blob: number[], w: number, h: number, scratch: Scratch, thin: number, minArea: number): number[][] {
+  const { depth, label, member } = scratch;
+  const thickest = peel(blob, w, h, scratch);
+  let parts: number[][] = [];
+  if (thickest > thin + 1) {
+    const inner = blob.filter((i) => depth[i] > thin);
+    for (const i of inner) label[i] = 1;
+    parts = components(label, inner, w, h, false, scratch).filter((core) => core.length >= minArea * 0.5);
+    for (const i of inner) label[i] = 0;
+    // Give each core back the layers that were shaved off it, and no more.
+    for (const i of blob) member[i] = 1;
+    for (const core of parts) for (const i of core) member[i] = 2;
+    for (const core of parts) {
+      let frontier = core.slice();
+      for (let round = 0; round < thin && frontier.length; round++) {
+        const next: number[] = [];
+        for (const i of frontier) {
+          const x = i % w;
+          for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+            if (j >= 0 && j < w * h && member[j] === 1) (member[j] = 2), next.push(j), core.push(j);
+          }
+        }
+        frontier = next;
+      }
+    }
+    for (const i of blob) member[i] = 0;
+  }
+  for (const i of blob) depth[i] = 0;
+  return parts;
+}
+
+// ---------------------------------------------------------------- finding pieces on a surface
+
+type RGB = [number, number, number];
+
+/** The picture being examined, converted once and shared by every level of the search. */
+interface Frame {
+  w: number;
+  h: number;
+  data: Uint8ClampedArray;
+  L: Float32Array;
+  A: Float32Array;
+  B: Float32Array;
+  scratch: Scratch;
+  minArea: number;
+}
+
+interface Piece {
+  pixels: number[];
+  rgb: RGB | null;
+  surface: RGB;
+  /** Share of the piece that is solid evidence, as opposed to outline and shadow. */
+  solidShare: number;
+  /** Share of the piece's outline that runs along the rim of the area that was searched. */
+  rimShare: number;
+}
+
+interface Search {
+  pieces: Piece[];
+  background: RGB;
+  /** Share of the searched area that looks like one continuous surface. */
+  surfaceShare: number;
+}
+
+/** How many of the picture's four edges a set of pixels reaches. */
+function edgesReached(pixels: number[], w: number, h: number): number {
+  let left = 0, right = 0, top = 0, bottom = 0;
+  for (const i of pixels) {
+    const x = i % w;
+    if (x <= 1) left = 1;
+    else if (x >= w - 2) right = 1;
+    if (i < 2 * w) top = 1;
+    else if (i >= (h - 2) * w) bottom = 1;
+  }
+  return left + right + top + bottom;
+}
+
+/** Nothing this large is examined as a surface in its own right more than this many levels down. */
+const MAX_DEPTH = 2;
+/** A blob covering this share of the picture may be a second surface (a sheet of paper on a desk) rather than a piece. */
+const SURFACE_AREA = 0.12;
+
+/**
+ * Finds the pieces lying on one surface: the whole picture (`within` null), or the part of it
+ * marked in `within`, which is how a sheet of paper on a desk, or the inside of a tray, gets
+ * searched when the picture as a whole is mostly something else.
+ */
+function search(frame: Frame, within: Uint8Array | null, depth: number): Search | null {
+  const { w, h, data, L, A, B, scratch, minArea } = frame;
+  const n = w * h;
+
+  // The area to look at, and which of its pixels may count: not the rim of the area itself,
+  // where the surface ends and something else begins.
+  let x0 = 0, y0 = 0, x1 = w, y1 = h;
+  let eligible: Uint8Array | null = null;
+  const k = Math.max(1, Math.round(Math.min(w, h) / 220));
+  if (within) {
+    x0 = w;
+    y0 = h;
+    x1 = y1 = 0;
+    for (let i = 0; i < n; i++) {
+      if (!within[i]) continue;
+      const x = i % w;
+      const y = (i / w) | 0;
+      if (x < x0) x0 = x;
+      if (x >= x1) x1 = x + 1;
+      if (y < y0) y0 = y;
+      if (y >= y1) y1 = y + 1;
+    }
+    if (x1 <= x0) return null;
+    eligible = morph(within, w, h, k + 1, false);
+  }
+
+  // ---- 1. Model of the surface, from a grid of tiles.
+  const tile = Math.max(6, Math.round(Math.min(x1 - x0, y1 - y0) / 26));
+  const cols = Math.ceil((x1 - x0) / tile);
+  const rows = Math.ceil((y1 - y0) / tile);
+  const tiles = cols * rows;
+  const tileX = new Float32Array(tiles);
+  const tileY = new Float32Array(tiles);
+  const tileL = new Float32Array(tiles);
+  const tileA = new Float32Array(tiles);
+  const tileB = new Float32Array(tiles);
+  const tileRgb = [new Float32Array(tiles), new Float32Array(tiles), new Float32Array(tiles)];
+  const capacity = (Math.ceil(tile / 3) + 1) ** 2;
+  const bufL = new Float32Array(capacity);
+  const bufA = new Float32Array(capacity);
+  const bufB = new Float32Array(capacity);
+  const usable: number[] = []; // tiles that lie mostly inside the area
+  for (let ty = 0, t = 0; ty < rows; ty++) {
+    for (let tx = 0; tx < cols; tx++, t++) {
+      let count = 0;
+      let seen = 0;
+      let r = 0, g = 0, b = 0;
+      const yEnd = Math.min(y1, y0 + (ty + 1) * tile);
+      const xEnd = Math.min(x1, x0 + (tx + 1) * tile);
+      for (let y = y0 + ty * tile; y < yEnd; y += 3) {
+        for (let x = x0 + tx * tile; x < xEnd; x += 3) {
+          const i = y * w + x;
+          seen++;
+          if (eligible && !eligible[i]) continue;
+          bufL[count] = L[i];
+          bufA[count] = A[i];
+          bufB[count] = B[i];
+          r += data[i * 4];
+          g += data[i * 4 + 1];
+          b += data[i * 4 + 2];
+          count++;
+        }
+      }
+      if (count < Math.max(3, seen * 0.4)) continue;
+      usable.push(t);
+      tileRgb[0][t] = r / count;
+      tileRgb[1][t] = g / count;
+      tileRgb[2][t] = b / count;
+      tileX[t] = (x0 + (tx + 0.5) * tile) / w;
+      tileY[t] = (y0 + (ty + 0.5) * tile) / h;
+      tileL[t] = medianOf(bufL, count);
+      tileA[t] = medianOf(bufA, count);
+      tileB[t] = medianOf(bufB, count);
+    }
+  }
+  if (usable.length < 12) return null;
+
+  // The surface is whatever most tiles look like. Start from the typical tile, then refit a few
+  // times, each time keeping only the tiles that agree with the current fit.
+  const typical = (values: Float32Array) => medianOf(Float32Array.from(usable, (t) => values[t]), usable.length);
+  let surfL: Surface = [typical(tileL), 0, 0, 0, 0, 0];
+  let surfA: Surface = [typical(tileA), 0, 0, 0, 0, 0];
+  let surfB: Surface = [typical(tileB), 0, 0, 0, 0, 0];
+  let backgroundTiles = usable;
+  for (let pass = 0; pass < 3; pass++) {
+    const tolerance = pass === 0 ? 14 : 8;
+    const agree: number[] = [];
+    for (const t of usable) {
+      const x = tileX[t];
+      const y = tileY[t];
+      const off = Math.hypot((tileL[t] - surfaceAt(surfL, x, y)) * 0.5, tileA[t] - surfaceAt(surfA, x, y), tileB[t] - surfaceAt(surfB, x, y));
+      if (off < tolerance) agree.push(t);
+    }
+    if (agree.length < usable.length * 0.15) break;
+    backgroundTiles = agree;
+    surfL = fitSurface(tileX, tileY, tileL, agree);
+    surfA = fitSurface(tileX, tileY, tileA, agree);
+    surfB = fitSurface(tileX, tileY, tileB, agree);
+  }
+
+  // Per-pixel differences from the surface, and edge strength.
+  const dL = new Float32Array(n);
+  const dA = new Float32Array(n);
+  const dB = new Float32Array(n);
+  const edge = new Float32Array(n);
+  for (let y = y0; y < y1; y++) {
+    const fy = y / h;
+    // Along a row the surface is a plain quadratic in x.
+    const l0 = surfL[0] + surfL[2] * fy + surfL[5] * fy * fy, l1 = surfL[1] + surfL[4] * fy, l2 = surfL[3];
+    const a0 = surfA[0] + surfA[2] * fy + surfA[5] * fy * fy, a1 = surfA[1] + surfA[4] * fy, a2 = surfA[3];
+    const b0 = surfB[0] + surfB[2] * fy + surfB[5] * fy * fy, b1 = surfB[1] + surfB[4] * fy, b2 = surfB[3];
+    const near = y > 0 && y < h - 1;
+    const far = y > 1 && y < h - 2;
+    for (let x = x0, i = y * w + x0; x < x1; x++, i++) {
+      const fx = x / w;
+      dL[i] = L[i] - (l0 + (l1 + l2 * fx) * fx);
+      dA[i] = A[i] - (a0 + (a1 + a2 * fx) * fx);
+      dB[i] = B[i] - (b0 + (b1 + b2 * fx) * fx);
+      if (near && x > 0 && x < w - 1) {
+        let step = Math.abs(L[i + 1] - L[i - 1]) + Math.abs(L[i + w] - L[i - w]);
+        // The same step measured across a wider gap: an edge that is out of focus is spread over
+        // several pixels, and shows up here when it no longer does between neighbours.
+        if (far && x > 1 && x < w - 2) {
+          const wide = Math.abs(L[i + 2] - L[i - 2]) + Math.abs(L[i + 2 * w] - L[i - 2 * w]);
+          if (wide > step) step = wide;
+        }
+        edge[i] = step;
+      }
+    }
+  }
+
+  // ---- 2. How noisy is the surface? Sampled inside the tiles that fit the model.
+  const samples = backgroundTiles.length * 5;
+  const noiseL = new Float32Array(samples);
+  const noiseC = new Float32Array(samples);
+  const noiseE = new Float32Array(samples);
+  let taken = 0;
+  for (const t of backgroundTiles) {
+    const cx = Math.round(tileX[t] * w);
+    const cy = Math.round(tileY[t] * h);
+    for (let s = 0; s < 5; s++) {
+      const x = clamp(cx + (s === 0 ? 0 : s & 1 ? -2 : 2), 2, w - 3);
+      const y = clamp(cy + (s === 0 ? 0 : s < 3 ? -2 : 2), 2, h - 3);
+      const i = y * w + x;
+      if (eligible && !eligible[i]) continue;
+      noiseL[taken] = Math.abs(dL[i]);
+      noiseC[taken] = Math.hypot(dA[i], dB[i]);
+      noiseE[taken] = edge[i];
+      taken++;
+    }
+  }
+  const sigmaL = medianOf(noiseL, taken) * 1.48;
+  const sigmaC = medianOf(noiseC, taken) * 1.48;
+  const edgeNoise = medianOf(noiseE, taken);
+  // The surface's color as the camera recorded it, for painting over things and for white balance.
+  const surfRgb = tileRgb.map((channel) => fitSurface(tileX, tileY, channel, backgroundTiles));
+  const surfaceColor = (x: number, y: number) => surfRgb.map((c) => clamp(surfaceAt(c, x, y), 0, 255)) as RGB;
+  const background = surfaceColor((x0 + x1) / 2 / w, (y0 + y1) / 2 / h);
+
+  const colorLimit = clamp(7 + 4 * sigmaC, 10, 26);
+  // A soft shadow darkens the surface by up to about a third; only something clearly darker than that is a piece.
+  const darkLimit = clamp(18 + 4 * sigmaL, 24, 50);
+  const brightLimit = clamp(12 + 4 * sigmaL, 16, 40);
+  // On a quiet surface even a faint sharp step counts: it is all there is to see of a white piece
+  // on white paper. The edge of a soft shadow is too gradual to register.
+  const edgeLimit = clamp(5 + 5 * edgeNoise, 9, 48);
+
+  // ---- 3. Which pixels belong to pieces?
+  const solid = new Uint8Array(n);
+  let mask: Uint8Array = new Uint8Array(n);
+  const colorLimit2 = colorLimit * colorLimit;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0, i = y * w + x0; x < x1; x++, i++) {
+      if (eligible && !eligible[i]) continue;
+      const firm = dA[i] * dA[i] + dB[i] * dB[i] > colorLimit2 || dL[i] < -darkLimit || dL[i] > brightLimit;
+      if (firm) solid[i] = mask[i] = 1;
+      else if (edge[i] > edgeLimit) mask[i] = 1;
+    }
+  }
+
+  if (eligible) {
+    // Whatever is joined to the rim of the area is the rim: the lip of a tray, the edge of the
+    // sheet. Left in, it would be an outline around everything, and all of it would be filled.
+    // (Done before outlines are thickened, or pieces lying close together near the rim would
+    // all count as joined to it.)
+    const { stack } = scratch;
+    let top = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0, i = y * w + x0; x < x1; x++, i++) {
+        if (mask[i] !== 1) continue;
+        if ((x > 0 && !eligible[i - 1]) || (x < w - 1 && !eligible[i + 1]) || (y > 0 && !eligible[i - w]) || (y < h - 1 && !eligible[i + w]) || !eligible[i]) {
+          mask[i] = 0;
+          stack[top++] = i;
+        }
+      }
+    }
+    while (top) {
+      const i = stack[--top];
+      const x = i % w;
+      const y = (i / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h || !mask[yy * w + xx]) continue;
+          mask[yy * w + xx] = 0;
+          stack[top++] = yy * w + xx;
+        }
+      }
+    }
+  }
+  // ---- 4. Join broken outlines, fill everything they enclose, shrink back, then drop specks.
+  mask = morph(fillHoles(morph(mask, w, h, k + 1, true), w, h), w, h, k + 1, false);
+  mask = morph(morph(mask, w, h, k, false), w, h, k, true);
+
+  const tintA = surfaceAt(surfA, (x0 + x1) / 2 / w, (y0 + y1) / 2 / h);
+  const tintB = surfaceAt(surfB, (x0 + x1) / 2 / w, (y0 + y1) / 2 / h);
+  const kept = clamp((Math.hypot(tintA, tintB) - 8) / 8, 0, 1);
+  const planes: Planes = { w, h, L, dL, A: dA, B: dB, keepA: tintA * kept, keepB: tintB * kept, solid };
+
+  const pieces: Piece[] = [];
+  const piece = (pixels: number[]): Piece => {
+    let minX = w, maxX = 0, minY = h, maxY = 0, firm = 0, outline = 0, rim = 0;
+    for (const i of pixels) {
+      const x = i % w;
+      const y = (i / w) | 0;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (solid[i]) firm++;
+    }
+    if (eligible) {
+      // How much of the outline lies against the rim of the area, where nothing could be seen.
+      for (const i of pixels) scratch.member[i] = 1;
+      for (const i of pixels) {
+        const x = i % w;
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+          if (j < 0 || j >= n || scratch.member[j]) continue;
+          outline++;
+          if (!eligible[j]) rim++;
+        }
+      }
+      for (const i of pixels) scratch.member[i] = 0;
+    }
+    return {
+      pixels,
+      rgb: pieceColor(pixels, data, planes, background),
+      surface: surfaceColor((minX + maxX + 1) / 2 / w, (minY + maxY + 1) / 2 / h),
+      solidShare: firm / pixels.length,
+      rimShare: outline ? rim / outline : 0,
+    };
+  };
+
+  for (const blob of components(mask, null, w, h, true, scratch)) {
+    if (blob.length < minArea) continue;
+
+    // ---- 5. Something this large, or reaching across the picture, may not be a piece at all
+    // but a second surface with pieces of its own on it: a sheet of paper on a desk, the inside
+    // of a tray, a mat. It is one if most of it looks alike and several things on it clearly do
+    // not, and lie well inside it. (The top and the side of one big brick are not a surface and a
+    // piece; nor are a tire and the wheel inside it, which is why one thing is not enough unless
+    // the area is far larger than a piece held close would be.)
+    const sprawling = edgesReached(blob, w, h) >= 2;
+    if ((blob.length > n * SURFACE_AREA || (sprawling && blob.length > n * 0.04)) && depth < MAX_DEPTH) {
+      const area = new Uint8Array(n);
+      for (const i of blob) area[i] = 1;
+      const inner = search(frame, area, depth + 1);
+      if (inner && inner.surfaceShare >= 0.5) {
+        const clear = inner.pieces.filter((p) => p.solidShare >= 0.3 && p.rimShare < 0.2);
+        const covered = clear.reduce((sum, p) => sum + p.pixels.length, 0);
+        if (clear.length >= (blob.length > n * 0.3 ? 1 : 2) && covered < blob.length * 0.5) {
+          for (const p of inner.pieces) if (p.rimShare < 0.5) pieces.push(p);
+          continue;
+        }
+      }
+    }
+    if (blob.length > n * 0.85) continue;
+
+    // ---- 6. One blob may be several touching pieces.
+    for (const part of splitByColor(blob, planes, scratch, minArea).flatMap((p) => splitByShape(p, planes, scratch, minArea))) {
+      // One thing filling a large share of the frame is a single piece held up close. Otherwise,
+      // something reaching two or more edges of the frame is the table edge or a hand, not a piece;
+      // but a piece may be lying against it.
+      if (part.length <= n * CLOSE_UP_AREA && edgesReached(part, w, h) >= 2) {
+        for (const core of thickParts(part, w, h, scratch, Math.max(2, Math.round(Math.min(w, h) / 80)), minArea)) {
+          if (core.length >= minArea && edgesReached(core, w, h) < 2) pieces.push(piece(core));
+        }
+        continue;
+      }
+      pieces.push(piece(part));
+    }
+  }
+
+  return { pieces, background, surfaceShare: backgroundTiles.length / usable.length };
+}
+
 // ---------------------------------------------------------------- main entry
 
 /**
@@ -463,188 +915,26 @@ export function segment(image: Pixels): Segmentation {
     A[i] = 500 * (fx - fy);
     B[i] = 200 * (fy - fz);
   }
-
-  // ---- 1. Background model, from a grid of tiles.
-  const tile = Math.max(6, Math.round(Math.min(w, h) / 26));
-  const cols = Math.ceil(w / tile);
-  const rows = Math.ceil(h / tile);
-  const tiles = cols * rows;
-  const tileX = new Float32Array(tiles);
-  const tileY = new Float32Array(tiles);
-  const tileL = new Float32Array(tiles);
-  const tileA = new Float32Array(tiles);
-  const tileB = new Float32Array(tiles);
-  const tileRgb = [new Float32Array(tiles), new Float32Array(tiles), new Float32Array(tiles)];
-  const capacity = (Math.ceil(tile / 3) + 1) ** 2;
-  const bufL = new Float32Array(capacity);
-  const bufA = new Float32Array(capacity);
-  const bufB = new Float32Array(capacity);
-  for (let ty = 0, t = 0; ty < rows; ty++) {
-    for (let tx = 0; tx < cols; tx++, t++) {
-      let count = 0;
-      let r = 0, g = 0, b = 0;
-      const yEnd = Math.min(h, (ty + 1) * tile);
-      const xEnd = Math.min(w, (tx + 1) * tile);
-      for (let y = ty * tile; y < yEnd; y += 3) {
-        for (let x = tx * tile; x < xEnd; x += 3) {
-          const i = y * w + x;
-          bufL[count] = L[i];
-          bufA[count] = A[i];
-          bufB[count] = B[i];
-          r += data[i * 4];
-          g += data[i * 4 + 1];
-          b += data[i * 4 + 2];
-          count++;
-        }
-      }
-      tileRgb[0][t] = r / count;
-      tileRgb[1][t] = g / count;
-      tileRgb[2][t] = b / count;
-      tileX[t] = ((tx + 0.5) * tile) / w;
-      tileY[t] = ((ty + 0.5) * tile) / h;
-      tileL[t] = medianOf(bufL, count);
-      tileA[t] = medianOf(bufA, count);
-      tileB[t] = medianOf(bufB, count);
-    }
-  }
-  // The surface is whatever most tiles look like. Start from the typical tile, then refit a few
-  // times, each time keeping only the tiles that agree with the current fit.
-  let surfL: Surface = [medianOf(tileL.slice(), tiles), 0, 0, 0, 0, 0];
-  let surfA: Surface = [medianOf(tileA.slice(), tiles), 0, 0, 0, 0, 0];
-  let surfB: Surface = [medianOf(tileB.slice(), tiles), 0, 0, 0, 0, 0];
-  let backgroundTiles: number[] = Array.from({ length: tiles }, (_, t) => t);
-  for (let pass = 0; pass < 3; pass++) {
-    const tolerance = pass === 0 ? 14 : 8;
-    const agree: number[] = [];
-    for (let t = 0; t < tiles; t++) {
-      const x = tileX[t];
-      const y = tileY[t];
-      const off = Math.hypot((tileL[t] - surfaceAt(surfL, x, y)) * 0.5, tileA[t] - surfaceAt(surfA, x, y), tileB[t] - surfaceAt(surfB, x, y));
-      if (off < tolerance) agree.push(t);
-    }
-    if (agree.length < tiles * 0.15) break;
-    backgroundTiles = agree;
-    surfL = fitSurface(tileX, tileY, tileL, agree);
-    surfA = fitSurface(tileX, tileY, tileA, agree);
-    surfB = fitSurface(tileX, tileY, tileB, agree);
-  }
-
-  // Per-pixel differences from the background, and edge strength.
-  const dL = new Float32Array(n);
-  const dA = new Float32Array(n);
-  const dB = new Float32Array(n);
-  const edge = new Float32Array(n);
-  for (let y = 0; y < h; y++) {
-    const fy = y / h;
-    // Along a row the surface is a plain quadratic in x.
-    const l0 = surfL[0] + surfL[2] * fy + surfL[5] * fy * fy, l1 = surfL[1] + surfL[4] * fy, l2 = surfL[3];
-    const a0 = surfA[0] + surfA[2] * fy + surfA[5] * fy * fy, a1 = surfA[1] + surfA[4] * fy, a2 = surfA[3];
-    const b0 = surfB[0] + surfB[2] * fy + surfB[5] * fy * fy, b1 = surfB[1] + surfB[4] * fy, b2 = surfB[3];
-    const inner = y > 0 && y < h - 1;
-    for (let x = 0, i = y * w; x < w; x++, i++) {
-      const fx = x / w;
-      dL[i] = L[i] - (l0 + (l1 + l2 * fx) * fx);
-      dA[i] = A[i] - (a0 + (a1 + a2 * fx) * fx);
-      dB[i] = B[i] - (b0 + (b1 + b2 * fx) * fx);
-      if (inner && x > 0 && x < w - 1) edge[i] = Math.abs(L[i + 1] - L[i - 1]) + Math.abs(L[i + w] - L[i - w]);
-    }
-  }
-
-  // ---- 2. How noisy is the background? Sampled inside the tiles that fit the model.
-  const samples = backgroundTiles.length * 5;
-  const noiseL = new Float32Array(samples);
-  const noiseC = new Float32Array(samples);
-  const noiseE = new Float32Array(samples);
-  let taken = 0;
-  for (const t of backgroundTiles) {
-    const cx = Math.round(tileX[t] * w);
-    const cy = Math.round(tileY[t] * h);
-    for (let s = 0; s < 5; s++) {
-      const x = clamp(cx + (s === 0 ? 0 : s & 1 ? -2 : 2), 1, w - 2);
-      const y = clamp(cy + (s === 0 ? 0 : s < 3 ? -2 : 2), 1, h - 2);
-      const i = y * w + x;
-      noiseL[taken] = Math.abs(dL[i]);
-      noiseC[taken] = Math.hypot(dA[i], dB[i]);
-      noiseE[taken] = edge[i];
-      taken++;
-    }
-  }
-  const sigmaL = medianOf(noiseL, taken) * 1.48;
-  const sigmaC = medianOf(noiseC, taken) * 1.48;
-  const edgeNoise = medianOf(noiseE, taken);
-  // The surface's color as the camera recorded it, for painting over things and for white balance.
-  const surfRgb = tileRgb.map((channel) => fitSurface(tileX, tileY, channel, backgroundTiles));
-  const surfaceColor = (x: number, y: number) => surfRgb.map((c) => clamp(surfaceAt(c, x, y), 0, 255)) as [number, number, number];
-  const background = surfaceColor(0.5, 0.5);
-
-  const colorLimit = clamp(7 + 4 * sigmaC, 10, 26);
-  // A soft shadow darkens the surface by up to about a third; only something clearly darker than that is a piece.
-  const darkLimit = clamp(18 + 4 * sigmaL, 24, 50);
-  const brightLimit = clamp(12 + 4 * sigmaL, 16, 40);
-  // On a quiet surface even a faint sharp step counts: it is all there is to see of a white piece
-  // on white paper. The edge of a soft shadow is too gradual to register.
-  const edgeLimit = clamp(5 + 5 * edgeNoise, 9, 48);
-
-  // ---- 3. Which pixels belong to pieces?
-  const solid = new Uint8Array(n);
-  let mask: Uint8Array = new Uint8Array(n);
-  const colorLimit2 = colorLimit * colorLimit;
-  for (let i = 0; i < n; i++) {
-    const firm = dA[i] * dA[i] + dB[i] * dB[i] > colorLimit2 || dL[i] < -darkLimit || dL[i] > brightLimit;
-    if (firm) solid[i] = mask[i] = 1;
-    else if (edge[i] > edgeLimit) mask[i] = 1;
-  }
-
-  // ---- 4. Join broken outlines, fill everything they enclose, shrink back, then drop specks.
-  const k = Math.max(1, Math.round(Math.min(w, h) / 220));
-  mask = morph(fillHoles(morph(mask, w, h, k + 1, true), w, h), w, h, k + 1, false);
-  mask = morph(morph(mask, w, h, k, false), w, h, k, true);
-
-  const minArea = Math.max(30, n * 0.0006);
-  const tintA = surfaceAt(surfA, 0.5, 0.5);
-  const tintB = surfaceAt(surfB, 0.5, 0.5);
-  const kept = clamp((Math.hypot(tintA, tintB) - 8) / 8, 0, 1);
-  const planes: Planes = { w, h, L, dL, A: dA, B: dB, keepA: tintA * kept, keepB: tintB * kept, solid };
   const scratch: Scratch = { seen: new Uint8Array(n), member: new Uint8Array(n), label: new Int32Array(n), depth: new Int32Array(n), stack: new Int32Array(n) };
-  const regions: Region[] = [];
+  const found = search({ w, h, data, L, A, B, scratch, minArea: Math.max(30, n * 0.0006) }, null, 0);
+
   const labels = new Int32Array(n);
-
-  for (const blob of components(mask, null, w, h, true, scratch)) {
-    if (blob.length < minArea || blob.length > n * 0.85) continue;
-
-    // ---- 5. One blob may be several touching pieces.
-    const pieces = splitByColor(blob, planes, scratch, minArea).flatMap((part) => splitByShape(part, planes, scratch, minArea));
-
-    for (const piece of pieces) {
-      let minX = w, maxX = 0, minY = h, maxY = 0;
-      for (const i of piece) {
-        const x = i % w;
-        const y = (i / w) | 0;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-      // One thing filling a large share of the frame is a single piece held up close.
-      const closeUp = piece.length > n * CLOSE_UP_AREA;
-      // Otherwise, something hugging two or more edges of the frame is the table edge or a hand, not a piece.
-      const edges = (minX <= 1 ? 1 : 0) + (minY <= 1 ? 1 : 0) + (maxX >= w - 2 ? 1 : 0) + (maxY >= h - 2 ? 1 : 0);
-      if (edges >= 2 && !closeUp) continue;
-
-      const label = regions.length + 1;
-      for (const i of piece) labels[i] = label;
-      regions.push({
-        x: minX / w,
-        y: minY / h,
-        w: (maxX - minX + 1) / w,
-        h: (maxY - minY + 1) / h,
-        area: piece.length / n,
-        rgb: pieceColor(piece, data, planes, background),
-        label,
-        surface: surfaceColor((minX + maxX + 1) / 2 / w, (minY + maxY + 1) / 2 / h),
-      });
+  const regions: Region[] = [];
+  for (const { pixels, rgb, surface } of found?.pieces ?? []) {
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    const label = regions.length + 1;
+    for (const i of pixels) {
+      const x = i % w;
+      const y = (i / w) | 0;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      labels[i] = label;
     }
+    regions.push({ x: minX / w, y: minY / h, w: (maxX - minX + 1) / w, h: (maxY - minY + 1) / h, area: pixels.length / n, rgb, label, surface });
   }
+  const background: RGB = found?.background ?? [128, 128, 128];
 
   // A close-up is scanned on its own: whatever else was found around it is shadow and clutter.
   let largest: Region | null = null;

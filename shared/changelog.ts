@@ -13,6 +13,20 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '1.4.0',
+    date: '2026-10-02',
+    title: 'Steadier scanning, and scanning sideways',
+    changes: [
+      'The scanner now works with the phone held sideways: the picture fills the screen, with the shutter under your thumb.',
+      'Pieces in the viewfinder are locked onto. Once a piece has been found it stays outlined while you hold the phone, instead of flickering in and out.',
+      'Every piece that was locked on when you press the shutter is scanned, even if that one photo came out soft.',
+      'Pieces are found on a sheet of paper or in a tray when the desk around it is in the picture too.',
+      'The holes in a beam, and a wheel inside its tire, are no longer counted as extra pieces.',
+      'A piece lying against the edge of the table is no longer lost.',
+      'The viewfinder stays smooth while it looks for pieces.',
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-10-02',
     title: 'Version numbers and release notes',

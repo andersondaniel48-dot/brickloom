@@ -292,12 +292,25 @@ export async function runScan(
   catalog: Catalog,
   onChange: (detections: Detection[]) => void,
   signal: AbortSignal,
+  /** Where the viewfinder had locked onto pieces when the photo was taken, as fractions of the frame. */
+  lockedOn: Box[] = [],
 ): Promise<void> {
   // Let the review screen appear before the heavy lifting starts.
   await new Promise((resolve) => setTimeout(resolve));
   if (signal.aborted) return;
   const located = locate(photo, WORK_SIZE);
   let regions = located?.regions ?? [];
+  // A piece the viewfinder had been following for a while is there, even if this one frame, taken
+  // on its own, fails to show it (a soft focus, a pale piece on a pale surface).
+  for (const seen of lockedOn) {
+    if (regions.length >= MAX_PIECES) break;
+    const box = { x: Math.max(0, seen.x), y: Math.max(0, seen.y), w: Math.min(1 - Math.max(0, seen.x), seen.w), h: Math.min(1 - Math.max(0, seen.y), seen.h) };
+    if (box.w <= 0.01 || box.h <= 0.01) continue;
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    if (regions.some((r) => overlap(r, box) > 0.3 || (cx > r.x && cx < r.x + r.w && cy > r.y && cy < r.y + r.h))) continue;
+    regions.push({ ...box, area: box.w * box.h * 0.6, rgb: centerColor(photo, box), label: 0, surface: located?.background ?? [128, 128, 128] });
+  }
   // No separable pieces (busy background, or one piece filling the frame): let the recognizer look
   // at the whole photo. It reports where it saw the piece, which then becomes the region.
   const wholeFrame = regions.length === 0;

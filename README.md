@@ -118,8 +118,15 @@ the app asks whether to combine them or keep one. Signing out leaves the device'
 **Scanning.** The camera is opened at the highest resolution it offers, and the sharpest of a few
 consecutive frames is kept. The photo is segmented in the browser (`src/lib/scan/segment.ts`): the
 surface is modelled as whatever most of the picture looks like, with its lighting fitted as a smooth
-gradient, and pixels that differ from it in color, or sit on a sharp edge, become pieces. Blobs are
-split where the color changes or the outline pinches to a neck. Each piece is cropped and
+gradient, and pixels that differ from it in color, or sit on a sharp edge, become pieces. A very
+large blob that looks like a surface with things on it (a sheet of paper on a desk, the inside of a
+tray) is searched in the same way instead of being taken for a piece. Blobs are split where the
+color changes or the outline pinches to a neck.
+
+While the camera is live, frames are examined in a web worker a few times a second, and what is
+found is followed from frame to frame (`src/lib/scan/tracker.ts`): a piece seen in a few frames is
+locked, stays outlined through frames that miss it, and is scanned when the shutter is pressed even
+if the photo taken at that moment would not have shown it on its own. Each piece is cropped and
 identified by [Brickognize](https://brickognize.com) (`src/lib/scan/session.ts`), several at a
 time, paced to stay under the rate that service accepts and retried when it refuses. Where the
 recognizer's answer does not cover everything in a region, the rest is cut out and identified too,

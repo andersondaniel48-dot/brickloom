@@ -20,6 +20,8 @@ interface Piece {
   h: number;
   angle: number;
   color: RGB;
+  /** Painted flat, with no shading or studs and no shadow: a sheet of paper, a line, a hole. */
+  plain?: boolean;
 }
 
 /** A photo of pieces on a sheet of paper: uneven light, camera noise, and a hard shadow beside each piece. */
@@ -51,13 +53,13 @@ function photo(pieces: Piece[], { width = 640, height = 480, noise = 3, shadow =
         if (Math.abs(u) > w / 2 || Math.abs(v) > h / 2) continue;
         const p = (y * width + x) * 4;
         // Lit from one side, with a faint pattern of studs.
-        const shade = color ? (0.9 + 0.2 * (v / h + 0.5)) * ((Math.floor((u + w) / 9) + Math.floor((v + h) / 9)) % 2 ? 1.06 : 0.94) : 1 - shadow;
+        const shade = !color ? 1 - shadow : piece.plain ? 1 : (0.9 + 0.2 * (v / h + 0.5)) * ((Math.floor((u + w) / 9) + Math.floor((v + h) / 9)) % 2 ? 1.06 : 0.94);
         for (let c = 0; c < 3; c++) data[p + c] = (color ? color[c] : data[p + c]) * shade;
       }
     }
   };
   for (const piece of pieces) {
-    if (shadow) paint(piece, piece.w * 0.06, piece.h * 0.12, 1.04, null);
+    if (shadow && !piece.plain) paint(piece, piece.w * 0.06, piece.h * 0.12, 1.04, null);
     paint(piece, 0, 0, 1, piece.color);
   }
   return { width, height, data };
@@ -120,6 +122,61 @@ test('the surface may be dark, colored or unevenly lit', () => {
     const image = photo(pieces, { surface, shadow: 0.15 });
     assert.equal(segment(image).regions.length, pieces.length, `surface ${surface}`);
   }
+});
+
+const DESK: RGB = [150, 112, 74];
+const PAPER: RGB = [240, 238, 232];
+const DARK_GRAY: RGB = [99, 95, 98];
+
+test('pieces on a sheet of paper are found when the paper is only part of the picture', () => {
+  const paper: Piece = { x: 330, y: 250, w: 330, h: 250, angle: 0.05, color: PAPER, plain: true };
+  const pieces: Piece[] = [RED, BLUE, GREEN, BLACK].map((color, i) => ({ x: 240 + (i % 2) * 170, y: 190 + Math.floor(i / 2) * 120, w: 60, h: 44, angle: i * 0.4, color }));
+  const image = photo([paper, ...pieces], { surface: DESK });
+  const { regions } = segment(image);
+  assert.equal(regions.length, pieces.length);
+  for (const p of pieces) assert.equal(holding(regions, p, image).length, 1);
+  assert.ok(regions.every((r) => r.w < 0.3), 'the sheet of paper came back as a piece');
+});
+
+test('pieces inside a tray are found, not the tray', () => {
+  // The rim of a tray: four thin dark bars closing a rectangle around the pieces.
+  const rim: Piece[] = [
+    { x: 320, y: 90, w: 440, h: 8, angle: 0, color: DARK_GRAY, plain: true },
+    { x: 320, y: 390, w: 440, h: 8, angle: 0, color: DARK_GRAY, plain: true },
+    { x: 100, y: 240, w: 8, h: 308, angle: 0, color: DARK_GRAY, plain: true },
+    { x: 540, y: 240, w: 8, h: 308, angle: 0, color: DARK_GRAY, plain: true },
+  ];
+  const pieces: Piece[] = [RED, YELLOW, BLUE, GREEN, ORANGE, BLACK].map((color, i) => ({ x: 190 + (i % 3) * 130, y: 180 + Math.floor(i / 3) * 120, w: 64, h: 44, angle: i * 0.3, color }));
+  const image = photo([...rim, ...pieces]);
+  const { regions } = segment(image);
+  for (const p of pieces) {
+    const [region, ...more] = holding(regions, p, image);
+    assert.ok(region && !more.length && region.w < 0.3, 'a piece in the tray was not found on its own');
+  }
+});
+
+test('the holes in a piece are part of the piece', () => {
+  // A dark gray beam with pin holes, on a light desk: the holes are in deep shadow.
+  const beam: Piece = { x: 320, y: 240, w: 240, h: 60, angle: 0.2, color: DARK_GRAY };
+  const holes: Piece[] = [-80, 0, 80].map((d) => ({ x: 320 + d * Math.cos(0.2), y: 240 + d * Math.sin(0.2), w: 30, h: 30, angle: 0.2, color: [18, 18, 20] as RGB, plain: true }));
+  assert.equal(segment(photo([beam, ...holes], { surface: [222, 196, 160] })).regions.length, 1);
+});
+
+test('a piece lying against the edge of the table is still found', () => {
+  // The floor beyond the table fills the bottom of the picture; a brick lies across the line.
+  const floor: Piece = { x: 320, y: 450, w: 700, h: 70, angle: 0, color: [70, 60, 55], plain: true };
+  const brick: Piece = { x: 300, y: 392, w: 80, h: 56, angle: 0, color: RED };
+  const other: Piece = { x: 200, y: 200, w: 70, h: 50, angle: 0.3, color: BLUE };
+  const image = photo([floor, brick, other], { shadow: 0 });
+  const { regions } = segment(image);
+  assert.equal(regions.length, 2);
+  assert.equal(holding(regions, brick, image).length, 1);
+});
+
+test('a brick held up close is one piece, though its top and side differ', () => {
+  const side: Piece = { x: 320, y: 290, w: 360, h: 150, angle: 0, color: [150, 20, 8], plain: true };
+  const top: Piece = { x: 320, y: 170, w: 360, h: 100, angle: 0, color: [215, 40, 20], plain: true };
+  assert.equal(segment(photo([side, top], { shadow: 0 })).regions.length, 1);
 });
 
 test('each pixel is labelled with the region it belongs to', () => {

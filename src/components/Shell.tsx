@@ -21,7 +21,7 @@ export function Shell() {
   const immersive = pathname === '/scan';
 
   return (
-    <div className="min-h-dvh lg:pl-64">
+    <div className="min-h-dvh short:rail-space lg:pl-64">
       {/* Sidebar: large screens */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-line bg-surface px-4 py-6 lg:flex">
         <NavLink to="/" className="mb-8 flex items-center gap-3 px-2">
@@ -66,13 +66,13 @@ export function Shell() {
         </div>
       </aside>
 
-      <main className={cx('mx-auto w-full', immersive ? 'max-w-none' : 'max-w-6xl px-4 pb-32 pt-5 sm:px-8 sm:pt-8 lg:pb-12')}>
+      <main className={cx('mx-auto w-full', immersive ? 'max-w-none' : 'max-w-6xl px-4 pb-32 pt-5 short:pb-8 sm:px-8 sm:pt-8 lg:pb-12')}>
         <Outlet />
       </main>
 
-      {/* Tab bar: phones and tablets */}
-      <nav className="safe-bottom pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 lg:hidden">
-        <div className="pointer-events-auto flex w-full max-w-md items-center justify-between rounded-[28px] border border-line bg-surface/85 px-2 py-1.5 shadow-float backdrop-blur-xl">
+      {/* Tab bar: phones and tablets. On a phone held sideways it stands on the left instead, where it costs no height. */}
+      <nav className="safe-bottom pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 short:inset-y-0 short:right-auto short:items-center short:px-0 short:pb-0 short:pl-[max(env(safe-area-inset-left),0.5rem)] lg:hidden">
+        <div className="pointer-events-auto flex w-full max-w-md items-center justify-between rounded-[28px] border border-line bg-surface/85 px-2 py-1.5 shadow-float backdrop-blur-xl short:w-auto short:flex-col short:gap-1 short:px-1.5 short:py-2">
           {NAV.map(({ to, label, icon: Icon, end }) =>
             to === '/scan' ? (
               <NavLink
@@ -81,7 +81,7 @@ export function Shell() {
                 aria-label={label}
                 className={({ isActive }) =>
                   cx(
-                    '-mt-7 flex size-[60px] shrink-0 items-center justify-center rounded-full border-4 border-bg bg-accent text-accent-ink shadow-card transition-transform active:scale-90',
+                    '-mt-7 flex size-[60px] shrink-0 items-center justify-center rounded-full border-4 border-bg bg-accent text-accent-ink shadow-card transition-transform active:scale-90 short:mt-0 short:size-12 short:border-0',
                     isActive && 'ring-2 ring-ink',
                   )
                 }
@@ -94,7 +94,7 @@ export function Shell() {
                 to={to}
                 end={end}
                 className={({ isActive }) =>
-                  cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-2xl py-1.5 text-[11px] font-semibold transition-colors', isActive ? 'text-ink' : 'text-ink-3')
+                  cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-2xl py-1.5 text-[11px] font-semibold transition-colors short:flex-none short:py-1', isActive ? 'text-ink' : 'text-ink-3')
                 }
               >
                 {({ isActive }) => (
@@ -102,7 +102,7 @@ export function Shell() {
                     <span className={cx('flex h-7 w-12 items-center justify-center rounded-full transition-colors', isActive && 'bg-accent text-accent-ink')}>
                       <Icon className="size-[20px]" strokeWidth={2.3} />
                     </span>
-                    {label}
+                    <span className="short:sr-only">{label}</span>
                   </>
                 )}
               </NavLink>

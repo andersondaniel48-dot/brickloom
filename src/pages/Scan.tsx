@@ -7,10 +7,15 @@ import { Button, ColorDot, IconButton, Sheet, Spinner, Stepper, cx, toast } from
 import { useCatalog, type PartInfo } from '../lib/catalog.ts';
 import { addPieces, type NewPiece } from '../lib/db.ts';
 import type { Candidate } from '../lib/scan/identify.ts';
-import type { Region } from '../lib/scan/segment.ts';
-import { captureStill, findPieces, matchColor, runScan, sampleTray, toCanvas, type Detection } from '../lib/scan/session.ts';
+import { LiveFinder } from '../lib/scan/live.ts';
+import { captureStill, matchColor, runScan, sampleTray, toCanvas, type Detection } from '../lib/scan/session.ts';
+import { Tracker, type Box, type Track } from '../lib/scan/tracker.ts';
 
 type CameraState = 'starting' | 'live' | 'denied' | 'unavailable';
+
+/** The viewfinder's frames are examined at this size (on the longer side), a few times a second. */
+const PREVIEW_SIZE = 480;
+const PREVIEW_EVERY = 140;
 
 /** Largest box of the given aspect ratio that fits inside the element the returned ref is attached to. */
 function useFit(aspect: number) {
@@ -41,13 +46,14 @@ export function ScanPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const scanAbort = useRef<AbortController | null>(null);
   const capturing = useRef(false);
+  const tracker = useRef(new Tracker());
 
   const [camera, setCamera] = useState<CameraState>('starting');
   const [attempt, setAttempt] = useState(0);
   const [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const [torch, setTorch] = useState<boolean | null>(null); // null: not supported
   const [aspect, setAspect] = useState(4 / 3);
-  const [live, setLive] = useState<Region[]>([]);
+  const [live, setLive] = useState<Track[]>([]);
   const [photo, setPhoto] = useState<HTMLCanvasElement | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [busy, setBusy] = useState(false);
@@ -116,14 +122,28 @@ export function ScanPage() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
-  // Live preview of what a capture would pick up.
+  // Live preview of what a capture would pick up: each frame's finds are fed to the tracker,
+  // which keeps hold of a piece through the odd frame that misses it.
   useEffect(() => {
     if (camera !== 'live' || photo) return;
-    const timer = window.setInterval(() => {
-      const video = videoRef.current;
-      if (video && video.readyState >= 2 && !document.hidden) setLive(findPieces(video, 320));
-    }, 250);
-    return () => window.clearInterval(timer);
+    const finder = new LiveFinder();
+    let stopped = false;
+    void (async () => {
+      while (!stopped) {
+        const started = performance.now();
+        const video = videoRef.current;
+        if (video && video.readyState >= 2 && !document.hidden) {
+          const found = await finder.find(video, PREVIEW_SIZE);
+          if (stopped) break;
+          setLive(tracker.current.update(found));
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.max(30, PREVIEW_EVERY - (performance.now() - started))));
+      }
+    })();
+    return () => {
+      stopped = true;
+      finder.close();
+    };
   }, [camera, photo]);
 
   const toggleTorch = async () => {
@@ -136,14 +156,14 @@ export function ScanPage() {
   // ---------------------------------------------------------------- scanning
 
   const scan = useCallback(
-    (canvas: HTMLCanvasElement) => {
+    (canvas: HTMLCanvasElement, lockedOn: Box[] = []) => {
       scanAbort.current?.abort();
       const abort = new AbortController();
       scanAbort.current = abort;
       setPhoto(canvas);
       setDetections([]);
       setBusy(true);
-      void runScan(canvas, catalog, setDetections, abort.signal).finally(() => !abort.signal.aborted && setBusy(false));
+      void runScan(canvas, catalog, setDetections, abort.signal, lockedOn).finally(() => !abort.signal.aborted && setBusy(false));
     },
     [catalog],
   );
@@ -154,7 +174,7 @@ export function ScanPage() {
     capturing.current = true;
     navigator.vibrate?.(12);
     try {
-      scan(await captureStill(video));
+      scan(await captureStill(video), tracker.current.locked());
     } finally {
       capturing.current = false;
     }
@@ -176,6 +196,7 @@ export function ScanPage() {
     setPhoto(null);
     setDetections([]);
     setBusy(false);
+    tracker.current.reset();
     setLive([]);
     // Some browsers pause a video while it is hidden.
     void videoRef.current?.play().catch(() => undefined);
@@ -185,6 +206,7 @@ export function ScanPage() {
 
   const update = (id: number, patch: Partial<Detection>) => setDetections((list) => list.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
+  const lockedOn = live.filter((t) => t.locked).length;
   const included = detections.filter((d) => d.included && d.candidates[d.choice] && d.color !== null);
   const total = included.reduce((n, d) => n + d.qty, 0);
 
@@ -210,7 +232,7 @@ export function ScanPage() {
   return (
     <>
     {photo && <Review photo={photo} detections={detections} busy={busy} total={total} onUpdate={update} onRetake={reset} onAdd={addAll} />}
-    <div className={cx('relative h-dvh flex-col bg-[#0b0c0f] text-white', photo ? 'hidden' : 'flex')}>
+    <div className={cx('relative h-dvh flex-col bg-[#0b0c0f] text-white short:flex-row', photo ? 'hidden' : 'flex')}>
       {fileInput}
 
       {/* Viewfinder */}
@@ -218,11 +240,16 @@ export function ScanPage() {
         <div className="relative" style={viewSize}>
           <video ref={videoRef} playsInline muted className={cx('size-full object-contain', camera !== 'live' && 'invisible')} />
           {camera === 'live' &&
-            live.map((r, i) => (
+            live.map((t) => (
               <div
-                key={i}
-                className="pointer-events-none absolute rounded-xl border-2 border-accent shadow-[0_0_0_1px_rgba(0,0,0,0.35)] transition-all duration-200"
-                style={{ left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%` }}
+                key={t.id}
+                className={cx(
+                  'pointer-events-none absolute rounded-xl border-2 shadow-[0_0_0_1px_rgba(0,0,0,0.35)] transition-all duration-150 ease-linear',
+                  // Locked on: solid. Only just seen: faint, until it has been seen a few times.
+                  t.locked ? 'border-accent' : 'border-white/55',
+                  t.held && 'opacity-70',
+                )}
+                style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, width: `${t.w * 100}%`, height: `${t.h * 100}%` }}
               />
             ))}
         </div>
@@ -260,20 +287,22 @@ export function ScanPage() {
 
         {/* Guidance */}
         {camera === 'live' && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center bg-gradient-to-b from-black/60 to-transparent px-4 pb-10 pt-4">
+          <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center bg-gradient-to-b from-black/60 to-transparent px-4 pb-10 pt-4 short:pt-2">
             <AnimatePresence mode="wait">
               <motion.div
-                key={live.length ? 'count' : 'hint'}
+                key={lockedOn ? 'count' : live.length ? 'steady' : 'hint'}
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 className="rounded-full bg-black/55 px-4 py-2 text-sm font-semibold backdrop-blur-md"
               >
-                {live.length ? (
+                {lockedOn ? (
                   <span className="flex items-center gap-2">
-                    <span className="tabular flex size-6 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-ink">{live.length}</span>
-                    piece{live.length === 1 ? '' : 's'} in view
+                    <span className="tabular flex h-6 min-w-6 items-center justify-center rounded-full bg-accent px-1.5 text-xs font-bold text-accent-ink">{lockedOn}</span>
+                    piece{lockedOn === 1 ? '' : 's'} locked on
                   </span>
+                ) : live.length ? (
+                  'Hold steady'
                 ) : (
                   'Spread pieces on a plain surface, not touching'
                 )}
@@ -284,7 +313,7 @@ export function ScanPage() {
       </div>
 
       {/* Controls */}
-      <div className="relative z-10 flex shrink-0 items-center justify-center gap-10 bg-[#0b0c0f] px-6 pb-28 pt-5 lg:pb-8">
+      <div className="relative z-10 flex shrink-0 items-center justify-center gap-10 bg-[#0b0c0f] px-6 pb-28 pt-5 short:flex-col-reverse short:gap-7 short:px-5 short:pb-0 short:pt-0 lg:pb-8">
         <IconButton label="Scan from a photo" onClick={() => fileRef.current?.click()} className="size-12 bg-white/10 text-white hover:bg-white/20 hover:text-white">
           <ImageUp className="size-5" />
         </IconButton>
@@ -380,11 +409,11 @@ function Review({
   };
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-44 pt-5 sm:px-8 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-8 lg:pb-28 lg:pt-8">
+    <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-44 pt-5 [--photo-height:44dvh] short:grid short:grid-cols-[minmax(0,4fr)_minmax(0,6fr)] short:gap-5 short:pb-24 short:[--photo-height:62dvh] sm:px-8 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-8 lg:pb-28 lg:pt-8">
       {/* The photo, with each found piece numbered */}
-      <div className="lg:sticky lg:top-8 lg:self-start">
+      <div className="short:sticky short:top-5 short:self-start lg:sticky lg:top-8 lg:self-start">
         {/* Sized so the box always has exactly the photo's shape: the piece outlines are placed as fractions of it. */}
-        <div className="relative mx-auto overflow-hidden rounded-3xl bg-black shadow-card" style={{ aspectRatio: aspect, width: `min(100%, calc(44dvh * ${aspect}))` }}>
+        <div className="relative mx-auto overflow-hidden rounded-3xl bg-black shadow-card" style={{ aspectRatio: aspect, width: `min(100%, calc(var(--photo-height) * ${aspect}))` }}>
           <Photo source={photo} className="block size-full" />
           {busy && <div className="pointer-events-none absolute inset-x-0 top-0 h-1/4 animate-[scan-sweep_1.6s_ease-in-out_infinite] bg-gradient-to-b from-transparent via-accent/35 to-transparent" />}
           {detections.length > 1 &&
@@ -418,7 +447,7 @@ function Review({
       </div>
 
       {/* Results */}
-      <div className="mt-5 lg:mt-0">
+      <div className="mt-5 short:mt-0 lg:mt-0">
         <div className="mb-3 flex items-end justify-between gap-3">
           <div>
             <h1 className="text-[28px] font-bold leading-tight">
@@ -458,7 +487,7 @@ function Review({
       </div>
 
       {/* Action bar */}
-      <div className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface/90 px-4 pt-3 backdrop-blur-xl lg:left-64">
+      <div className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface/90 px-4 pt-3 backdrop-blur-xl short:left-[var(--rail)] lg:left-64">
         <div className="mx-auto flex max-w-6xl items-center gap-3 sm:px-4">
           <Button onClick={onRetake} size="lg" className="px-5">
             <RotateCcw className="size-5" /> <span className="hidden xs:inline">Retake</span>
