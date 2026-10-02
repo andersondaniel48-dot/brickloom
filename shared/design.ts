@@ -15,7 +15,7 @@ export interface DesignResult {
   parts: Placement[];
   /** True when the validator had to drop parts to make the final build sound. */
   repaired: boolean;
-  engine: 'claude' | 'quick';
+  engine: 'claude' | 'openai' | 'quick';
 }
 
 export type DesignEvent =

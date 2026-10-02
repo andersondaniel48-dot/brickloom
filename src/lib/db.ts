@@ -20,7 +20,7 @@ export interface BuildRow {
   name: string;
   description: string;
   prompt: string;
-  engine: 'claude' | 'quick';
+  engine: 'claude' | 'openai' | 'quick';
   repaired: boolean;
   createdAt: number;
   parts: Placement[];

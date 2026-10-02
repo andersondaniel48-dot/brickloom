@@ -81,7 +81,7 @@ export function BuildPage() {
 
         <div>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-ink/7 px-3 py-1 text-xs font-bold uppercase tracking-wider text-ink-2">
-            <Sparkles className="size-3.5" /> {build.engine === 'claude' ? 'Designed by Claude' : 'Quick build'}
+            <Sparkles className="size-3.5" /> {build.engine === 'claude' ? 'Designed by Claude' : build.engine === 'openai' ? 'Designed by GPT' : 'Quick build'}
           </span>
           <h1 className="mt-3 text-[36px] font-bold leading-[1.05] sm:text-5xl">{build.name}</h1>
           <p className="mt-3 text-[17px] leading-relaxed text-ink-2">{build.description}</p>

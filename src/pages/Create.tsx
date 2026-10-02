@@ -9,7 +9,7 @@ import { useCatalog } from '../lib/catalog.ts';
 import { db } from '../lib/db.ts';
 import { runDesign, type DesignEvent, type DesignSize } from '../lib/designer.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
-import { useSettings } from '../lib/settings.ts';
+import { OPENAI_MODELS, designerFor, useSettings } from '../lib/settings.ts';
 
 const IDEAS = [
   'A cozy cottage with a pitched roof',
@@ -32,7 +32,7 @@ export function CreatePage() {
   const catalog = useCatalog();
   const rows = useInventory();
   const stats = useStats(rows, catalog);
-  const apiKey = useSettings((s) => s.apiKey);
+  const designer = designerFor(useSettings());
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [prompt, setPrompt] = useState(params.get('prompt') ?? '');
@@ -47,7 +47,6 @@ export function CreatePage() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const usesClaude = apiKey !== '';
   const inventory = useMemo(() => (rows ?? []).filter((r) => !r.part.startsWith('bl-')).map((r) => ({ part: r.part, color: r.color, qty: r.qty })), [rows]);
 
   if (!rows) return null;
@@ -85,7 +84,7 @@ export function CreatePage() {
       }
     };
     try {
-      await runDesign({ prompt: text, size, inventory }, catalog, { apiKey, signal: abort.signal, onEvent });
+      await runDesign({ prompt: text, size, inventory }, catalog, { designer, signal: abort.signal, onEvent });
     } catch (err) {
       console.error(err);
       if (!abort.signal.aborted) toast('The designer could not start. Check your connection and try again.', 'error');
@@ -199,12 +198,12 @@ export function CreatePage() {
         ))}
       </div>
 
-      <div className={cx('mt-8 flex items-start gap-3 rounded-3xl border p-4 text-[15px]', usesClaude ? 'border-line bg-surface-2' : 'border-brick-amber/30 bg-brick-amber/10')}>
-        {usesClaude ? (
+      <div className={cx('mt-8 flex items-start gap-3 rounded-3xl border p-4 text-[15px]', designer ? 'border-line bg-surface-2' : 'border-brick-amber/30 bg-brick-amber/10')}>
+        {designer ? (
           <>
             <Sparkles className="mt-0.5 size-5 shrink-0" />
             <p className="text-ink-2">
-              <span className="font-semibold text-ink">Designed by Claude.</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have.
+              <span className="font-semibold text-ink">{designer.provider === 'openai' ? `Designed by ${OPENAI_MODELS.find((m) => m.id === designer.model)?.name ?? designer.model}.` : 'Designed by Claude.'}</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have.
             </p>
           </>
         ) : (
@@ -213,7 +212,7 @@ export function CreatePage() {
             <p>
               <span className="font-semibold">Running the offline quick-builder,</span> which only knows towers, houses and pyramids.{' '}
               <Link to="/settings" className="font-semibold underline underline-offset-2">
-                Add an Anthropic API key
+                Add an API key for Claude or ChatGPT
               </Link>{' '}
               to design anything you can describe.
             </p>

@@ -1,7 +1,7 @@
 {
   "name": "brickloom",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "description": "Scan, catalog and sort your bricks, then design new builds from what you own and follow step-by-step instructions.",
   "scripts": {
@@ -25,6 +25,7 @@
     "firebase": "^12.19.0",
     "lucide-react": "^1.49.0",
     "motion": "^13.5.0",
+    "openai": "^7.27.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router": "^8.4.0",

@@ -63,10 +63,16 @@ will not install the app from such an address.
 
 ### Turning on the AI designer
 
-Designs are created by Claude through the Anthropic API. Paste an API key into **Settings** in the
-app, once on each device. The key is kept in that browser only and sent only to Anthropic; use a key
-with a spending limit. Without a key the Create tab falls back to a small offline builder that only
-knows towers, houses and pyramids.
+Designs are created by an AI model: Claude, through the Anthropic API, or one of OpenAI's GPT
+models, through the OpenAI API. Paste an API key for either (or both) into **Settings** in the app,
+once on each device, and choose there which one does the designing. A key is kept in that browser
+only and sent only to the company that issued it; use a key with a spending limit. Without a key
+the Create tab falls back to a small offline builder that only knows towers, houses and pyramids.
+
+API keys are billed by use, separately from the chat subscriptions: a ChatGPT Plus or Claude
+subscription does not come with one, and neither company offers a way for an app like this to draw
+on a subscription. Keys come from [platform.openai.com](https://platform.openai.com/api-keys) and
+[console.anthropic.com](https://console.anthropic.com/settings/keys).
 
 ### Accounts: Sign in with Google (optional)
 
@@ -149,11 +155,13 @@ shared file of the primitives most parts use (`scripts/build-geometry.ts`). The 
 file the first time it draws it.
 
 **Designing.** The data build also analyses part geometry to work out, for about 900 parts, where
-each one's studs and sockets are on the stud grid (`shared/shape.ts`). The designer
-(`src/lib/claude-designer.ts`) runs in the browser: it gives Claude the buildable part of your
-inventory and a tool to submit a model; every submission is checked by `shared/build.ts` for
-overlaps, unattached parts and inventory overruns, and the result is sent back with text views of
-the model until it is sound. Parts the grid model cannot represent (hinges, clips, Technic pins,
+each one's studs and sockets are on the stud grid (`shared/shape.ts`). The designer runs in the
+browser: it gives the model the buildable part of your inventory and a tool to submit a build;
+every submission is checked by `shared/build.ts` for overlaps, unattached parts and inventory
+overruns, and the result is sent back with text views of the build until it is sound. That
+conversation is the same whichever model is designing (`src/lib/design-core.ts`); the code that
+carries it to Claude (`src/lib/claude-designer.ts`) or to a GPT model
+(`src/lib/openai-designer.ts`) is a thin layer over each company's SDK. Parts the grid model cannot represent (hinges, clips, Technic pins,
 sideways studs) stay in your collection but are not used in designs.
 
 **Instructions.** `planSteps` orders a model bottom-up so nothing is placed before it has something
@@ -165,7 +173,7 @@ redirect, which is the only flow that also works in an app installed on an iPhon
 device's database to and from a small private area of Firestore per person.
 
 Your collection and builds are stored in the browser (IndexedDB). They leave the device only as the
-piece photos sent to Brickognize for identification, the inventory sent to Anthropic when you ask
+piece photos sent to Brickognize for identification, the inventory sent to Anthropic or OpenAI when you ask
 for a design, and, if you sign in, the copy saved to your account.
 
 ## Releasing a new version

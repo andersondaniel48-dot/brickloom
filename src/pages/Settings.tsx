@@ -10,7 +10,7 @@ import { addPieces, db, type NewPiece } from '../lib/db.ts';
 import { isIOS, useInstall } from '../lib/install.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
 import { asset } from '../lib/paths.ts';
-import { useSettings, type Theme } from '../lib/settings.ts';
+import { OPENAI_MODELS, designerFor, useSettings, type Provider, type Theme } from '../lib/settings.ts';
 import { STARTER_COLLECTION } from '../lib/starter.ts';
 import { useWhatsNew } from '../lib/whats-new.ts';
 
@@ -18,8 +18,7 @@ export function SettingsPage() {
   const catalog = useCatalog();
   const rows = useInventory();
   const stats = useStats(rows, catalog);
-  const { theme, setTheme, apiKey, setApiKey } = useSettings();
-  const [keyDraft, setKeyDraft] = useState(apiKey);
+  const { theme, setTheme } = useSettings();
   const { available, installed, install } = useInstall();
   const signedIn = useAccount((s) => Boolean(s.user));
   const fileRef = useRef<HTMLInputElement>(null);
@@ -110,44 +109,7 @@ export function SettingsPage() {
         )}
       </Section>
 
-      <Section
-        title="AI designer"
-        description="Designs are created by Claude. Paste an Anthropic API key to turn the designer on. The key is stored only in this browser on this device, and is sent only to Anthropic when you ask for a design."
-      >
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setApiKey(keyDraft);
-            toast(keyDraft.trim() ? 'API key saved' : 'API key removed');
-          }}
-        >
-          <label className="relative min-w-0 flex-1">
-            <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
-            <input
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              placeholder="sk-ant-..."
-              className="h-11 w-full rounded-2xl border border-line bg-surface-2 pl-10 pr-4 font-mono text-sm outline-none placeholder:text-ink-3 focus:border-ink"
-            />
-          </label>
-          <Button type="submit" variant="primary" disabled={keyDraft.trim() === apiKey}>
-            {apiKey && keyDraft.trim() === apiKey ? (
-              <>
-                <Check className="size-4" strokeWidth={3} /> Saved
-              </>
-            ) : (
-              'Save'
-            )}
-          </Button>
-        </form>
-        <p className="mt-2.5 text-sm text-ink-3">
-          Without a key, the Create tab uses a simple offline builder. Each device needs the key entered once; use a key with a spending limit, since anyone with access to this device's browser can use it.
-        </p>
-      </Section>
+      <DesignerSection />
 
       <Section title="Your collection" description={`${stats.pieces.toLocaleString()} pieces, ${signedIn ? 'stored on this device and saved to your account' : 'stored only on this device'}.`}>
         <div className="flex flex-wrap gap-2.5">
@@ -201,6 +163,110 @@ export function SettingsPage() {
         </div>
       </Section>
     </div>
+  );
+}
+
+const PROVIDERS: Record<Provider, { name: string; company: string; placeholder: string; keysUrl: string; keysAt: string }> = {
+  claude: { name: 'Claude', company: 'Anthropic', placeholder: 'sk-ant-...', keysUrl: 'https://console.anthropic.com/settings/keys', keysAt: 'console.anthropic.com' },
+  openai: { name: 'ChatGPT', company: 'OpenAI', placeholder: 'sk-...', keysUrl: 'https://platform.openai.com/api-keys', keysAt: 'platform.openai.com' },
+};
+
+/** Which AI designs the builds, and the API key it needs. */
+function DesignerSection() {
+  const settings = useSettings();
+  const { provider, setProvider, apiKey, setApiKey, openaiKey, setOpenaiKey, openaiModel, setOpenaiModel } = settings;
+  const saved = provider === 'openai' ? openaiKey : apiKey;
+  const save = provider === 'openai' ? setOpenaiKey : setApiKey;
+  const [draft, setDraft] = useState(saved);
+  // Each service has its own key: show the right one when switching between them.
+  useEffect(() => setDraft(saved), [provider, saved]);
+  const { name, company, placeholder, keysUrl, keysAt } = PROVIDERS[provider];
+  const inUse = designerFor(settings);
+
+  return (
+    <Section
+      title="AI designer"
+      description="Designs are created by an AI model, which you connect with an API key of your own. A key is stored only in this browser on this device, and is sent only to the company that issued it, when you ask for a design."
+    >
+      <Segmented<Provider>
+        className="mb-3 w-full"
+        value={provider}
+        onChange={setProvider}
+        options={(['claude', 'openai'] as const).map((p) => ({
+          value: p,
+          label: (
+            <Label icon={(p === 'openai' ? openaiKey : apiKey) ? <Check className="size-4 text-brick-green" strokeWidth={3} /> : null}>
+              {PROVIDERS[p].name} <span className="font-normal text-ink-3">({PROVIDERS[p].company})</span>
+            </Label>
+          ),
+        }))}
+      />
+
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save(draft);
+          toast(draft.trim() ? `${company} API key saved` : `${company} API key removed`);
+        }}
+      >
+        <label className="relative min-w-0 flex-1">
+          <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label={`${company} API key`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={placeholder}
+            className="h-11 w-full rounded-2xl border border-line bg-surface-2 pl-10 pr-4 font-mono text-sm outline-none placeholder:text-ink-3 focus:border-ink"
+          />
+        </label>
+        <Button type="submit" variant="primary" disabled={draft.trim() === saved}>
+          {saved && draft.trim() === saved ? (
+            <>
+              <Check className="size-4" strokeWidth={3} /> Saved
+            </>
+          ) : (
+            'Save'
+          )}
+        </Button>
+      </form>
+
+      {provider === 'openai' && (
+        <label className="mt-3 block">
+          <span className="mb-1.5 block text-sm font-semibold">Model</span>
+          <select
+            value={openaiModel}
+            onChange={(e) => setOpenaiModel(e.target.value)}
+            className="h-11 w-full rounded-2xl border border-line bg-surface-2 px-3.5 text-[15px] outline-none focus:border-ink"
+          >
+            {OPENAI_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <span className="mt-1.5 block text-sm text-ink-3">{OPENAI_MODELS.find((m) => m.id === openaiModel)?.note}</span>
+        </label>
+      )}
+
+      <div className="mt-3 space-y-2 text-sm leading-relaxed text-ink-3">
+        <p>
+          Keys come from <ExternalLink href={keysUrl}>{keysAt}</ExternalLink> and are paid for by use.{' '}
+          {provider === 'openai'
+            ? 'A ChatGPT Plus subscription does not include one: OpenAI bills its API separately, and a subscription cannot be connected to an app like this.'
+            : 'A Claude subscription does not include one: Anthropic bills its API separately.'}
+        </p>
+        <p>
+          {inUse
+            ? `Builds are now designed by ${PROVIDERS[inUse.provider].name}${inUse.provider !== provider ? `, as there is no key for ${name} yet` : ''}.`
+            : 'Without a key, the Create tab uses a simple offline builder.'}{' '}
+          Each device needs its key entered once; use a key with a spending limit, since anyone with access to this device's browser can use it.
+        </p>
+      </div>
+    </Section>
   );
 }
 

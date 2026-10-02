@@ -13,6 +13,16 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '1.5.0',
+    date: '2026-10-02',
+    title: 'Design with ChatGPT',
+    changes: [
+      'Builds can now be designed by the GPT models behind ChatGPT as well as by Claude. Add an OpenAI API key under Settings, and choose which of the two does the designing.',
+      'Three GPT models to choose from, trading quality against cost.',
+      'An OpenAI key that is rejected, or an account with no API credit, is now reported as such.',
+    ],
+  },
+  {
     version: '1.4.0',
     date: '2026-10-02',
     title: 'Steadier scanning, and scanning sideways',
