@@ -161,7 +161,14 @@ every submission is checked by `shared/build.ts` for overlaps, unattached parts 
 overruns, and the result is sent back with text views of the build until it is sound. That
 conversation is the same whichever model is designing (`src/lib/design-core.ts`); the code that
 carries it to Claude (`src/lib/claude-designer.ts`) or to a GPT model
-(`src/lib/openai-designer.ts`) is a thin layer over each company's SDK. Parts the grid model cannot represent (hinges, clips, Technic pins,
+(`src/lib/openai-designer.ts`) is a thin layer over each company's SDK.
+
+A design belongs to the app, not to the Create screen (`src/lib/design-job.ts`), so it carries on
+while other screens are open. It cannot outlive the page, though: there is no server to carry on
+in. When a phone locks or the app goes to the background, the system cuts the connection to the
+model; the round under way is lost, and is asked for again when the app is back on screen
+(`resilientTurn` in `design-core.ts`). The time left is estimated from how long each round is
+taking, against how long designs with that model have taken on this device (`shared/estimate.ts`). Parts the grid model cannot represent (hinges, clips, Technic pins,
 sideways studs) stay in your collection but are not used in designs.
 
 **Instructions.** `planSteps` orders a model bottom-up so nothing is placed before it has something

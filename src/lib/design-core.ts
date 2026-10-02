@@ -260,3 +260,130 @@ export function sentenceFeed(emit: (event: DesignEvent) => void): (delta: string
     }
   };
 }
+
+// ---------------------------------------------------------------- surviving a lost connection
+
+/** After the builder comes back to the app, a model silent for this long is taken to have been cut off. */
+const SILENCE_AFTER_RETURN = 60_000;
+/** A connection that fails with the app in plain view is retried this often before giving up. */
+const QUICK_RETRIES = 2;
+/** Every return to the app may find the connection gone; this many in one round is enough. */
+const MAX_RESUMES = 12;
+
+/** What a round needs to know of the app's surroundings: is it on screen, is the device online. */
+export interface Surroundings {
+  hidden(): boolean;
+  offline(): boolean;
+  /** Calls back whenever either may have changed. Returns a function that stops it doing so. */
+  watch(changed: () => void): () => void;
+}
+
+interface Listenable {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+// Spelled out rather than taken from the browser's own types, which the tests are compiled without.
+const world = globalThis as unknown as Partial<Listenable> & { document?: Listenable & { hidden: boolean }; navigator?: { onLine?: boolean } };
+
+/** The surroundings as the browser reports them. Outside a browser: always on screen, always online. */
+export const BROWSER: Surroundings = {
+  hidden: () => Boolean(world.document?.hidden),
+  offline: () => world.navigator?.onLine === false,
+  watch: (changed) => {
+    world.document?.addEventListener('visibilitychange', changed);
+    world.addEventListener?.('online', changed);
+    return () => {
+      world.document?.removeEventListener('visibilitychange', changed);
+      world.removeEventListener?.('online', changed);
+    };
+  },
+};
+
+const wait = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => (clearTimeout(timer), reject(signal.reason)), { once: true });
+  });
+
+/** Resolves once the app is on screen and the device is online. */
+function backInView(around: Surroundings, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (around.hidden() || around.offline()) return;
+      stop();
+      resolve();
+    };
+    const abort = () => (stop(), reject(signal!.reason));
+    const unwatch = around.watch(check);
+    const stop = () => {
+      unwatch();
+      signal?.removeEventListener('abort', abort);
+    };
+    signal?.addEventListener('abort', abort);
+    check();
+  });
+}
+
+/**
+ * Runs one round of the conversation, and runs it again if the connection to the model is lost
+ * on the way. That happens whenever a phone stops attending to the app: the screen locks, or the
+ * builder switches to another app, and the system cuts the app's connections. The answer under
+ * way is lost with it, but nothing before it is, so the round is simply asked for again once
+ * the app is back on screen.
+ *
+ * `run` is given a signal that cancels it, and should call `alive` whenever the model is heard from.
+ * (`patience` scales every wait, so that tests need not take minutes.)
+ */
+export async function resilientTurn<T>(
+  run: (signal: AbortSignal, alive: () => void) => Promise<T>,
+  options: { signal?: AbortSignal; emit: (event: DesignEvent) => void; lostConnection: (err: unknown) => boolean; surroundings?: Surroundings; patience?: number },
+): Promise<T> {
+  const { signal, emit, lostConnection, surroundings: around = BROWSER, patience = 1 } = options;
+  let quick = 0;
+  for (let resumes = 0; ; resumes++) {
+    const turn = new AbortController();
+    const cancel = () => turn.abort();
+    signal?.addEventListener('abort', cancel);
+
+    // A connection cut while the app was away does not always fail: it can just go quiet. So
+    // after a return, the model has to be heard from now and then, or the round is cut short.
+    let wasAway = around.hidden();
+    let leftAt: number | null = wasAway ? Date.now() : null;
+    let silent = false;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const listen = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => ((silent = true), turn.abort()), SILENCE_AFTER_RETURN * patience);
+    };
+    const onVisibility = () => {
+      if (around.hidden()) {
+        leftAt = Date.now();
+        clearTimeout(watchdog);
+        watchdog = undefined;
+      } else if (leftAt !== null) {
+        if (Date.now() - leftAt > 5000 * patience) (wasAway = true), listen();
+        leftAt = null;
+      }
+    };
+    const unwatch = around.watch(onVisibility);
+
+    try {
+      return await run(turn.signal, () => watchdog && listen());
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const lost = silent || lostConnection(err);
+      const away = silent || wasAway || around.hidden() || around.offline();
+      // With the app in plain view and online, a failed connection is a real failure sooner.
+      if (!lost || resumes >= MAX_RESUMES || (!away && quick++ >= QUICK_RETRIES)) throw err;
+      emit({ type: 'paused', reason: around.offline() ? 'offline' : 'away' });
+    } finally {
+      clearTimeout(watchdog);
+      unwatch();
+      signal?.removeEventListener('abort', cancel);
+    }
+    await backInView(around, signal);
+    // A moment for the network to come back up; longer each time it fails with the app in view.
+    await wait((1000 + quick * 2500) * patience, signal);
+    emit({ type: 'resumed' });
+  }
+}

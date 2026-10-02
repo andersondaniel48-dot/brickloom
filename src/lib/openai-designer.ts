@@ -8,7 +8,7 @@
 // on a subscription.
 import OpenAI from 'openai';
 import type { DesignCatalog, DesignEvent, DesignRequest } from '../../shared/design.ts';
-import { DesignSession, SUBMIT_TOOL, SYSTEM, sentenceFeed } from './design-core.ts';
+import { DesignSession, SUBMIT_TOOL, SYSTEM, resilientTurn, sentenceFeed } from './design-core.ts';
 
 const TOOL: OpenAI.Responses.FunctionTool = {
   type: 'function',
@@ -29,34 +29,44 @@ export async function designWithOpenAI(
   const session = new DesignSession(request, catalog, emit);
   if (!session.ready()) return;
 
+  emit({ type: 'status', message: 'Studying your collection' });
+
   const client = new OpenAI({ apiKey: options.apiKey, dangerouslyAllowBrowser: true });
+  // Asked first because its answer can be read: a rejected key, or a model the key may not use,
+  // would otherwise only show up as a connection that fails for no visible reason (see describeError).
+  await client.models.retrieve(options.model, { signal: options.signal });
+
   // Each turn sends only what is new; the conversation so far is referred to by the id of the last response.
   let input: OpenAI.Responses.ResponseInput = [{ role: 'user', content: session.brief() }];
   let previous: string | undefined;
   let summaries = true;
 
-  emit({ type: 'status', message: 'Studying your collection' });
-
   while (true) {
-    const stream = client.responses.stream(
-      {
-        model: options.model,
-        instructions: SYSTEM,
-        input,
-        previous_response_id: previous,
-        tools: [TOOL],
-        parallel_tool_calls: false,
-        max_output_tokens: 64000,
-        reasoning: { effort: 'high', ...(summaries ? { summary: 'auto' as const } : {}) },
-      },
-      { signal: options.signal },
-    );
-    const feed = sentenceFeed(emit);
-    stream.on('response.reasoning_summary_text.delta', (event) => feed(event.delta));
-
     let response: OpenAI.Responses.Response;
     try {
-      response = await stream.finalResponse();
+      response = await resilientTurn(
+        (signal, alive) => {
+          const stream = client.responses.stream(
+            {
+              model: options.model,
+              instructions: SYSTEM,
+              input,
+              previous_response_id: previous,
+              tools: [TOOL],
+              parallel_tool_calls: false,
+              max_output_tokens: 64000,
+              reasoning: { effort: 'high', ...(summaries ? { summary: 'auto' as const } : {}) },
+            },
+            { signal },
+          );
+          const feed = sentenceFeed(emit);
+          stream.on('response.reasoning_summary_text.delta', (event) => feed(event.delta));
+          stream.on('event', alive);
+          return stream.finalResponse();
+        },
+        // A connection that breaks in the middle of an answer surfaces as a plain SDK error, not an API one.
+        { signal: options.signal, emit, lostConnection: (err) => err instanceof OpenAI.APIConnectionError || (err instanceof OpenAI.OpenAIError && !(err instanceof OpenAI.APIError)) },
+      );
     } catch (err) {
       // Summaries of the model's reasoning are only shown to organizations OpenAI has verified.
       // They are a nicety (something to read while waiting), so do without rather than fail.

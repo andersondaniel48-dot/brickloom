@@ -4,7 +4,7 @@
 // their device; that is what makes `dangerouslyAllowBrowser` acceptable here.
 import Anthropic from '@anthropic-ai/sdk';
 import type { DesignCatalog, DesignEvent, DesignRequest } from '../../shared/design.ts';
-import { DesignSession, SUBMIT_TOOL, SYSTEM, sentenceFeed } from './design-core.ts';
+import { DesignSession, SUBMIT_TOOL, SYSTEM, resilientTurn, sentenceFeed } from './design-core.ts';
 
 const TOOL: Anthropic.Beta.BetaTool = {
   name: SUBMIT_TOOL.name,
@@ -92,25 +92,31 @@ export async function designWithClaude(
   let jsonRetries = 0;
 
   while (true) {
-    const stream = client.beta.messages.stream(
-      {
-        model: options.model,
-        ...tuning,
-        cache_control: { type: 'ephemeral' },
-        system: SYSTEM,
-        tools: [TOOL],
-        messages,
-      },
-      { signal: options.signal },
-    );
-    stream.on('thinking', sentenceFeed(emit));
-
     let message: Anthropic.Beta.BetaMessage;
     try {
-      message = await stream.finalMessage();
+      message = await resilientTurn(
+        (signal, alive) => {
+          const stream = client.beta.messages.stream(
+            {
+              model: options.model,
+              ...tuning,
+              cache_control: { type: 'ephemeral' },
+              system: SYSTEM,
+              tools: [TOOL],
+              messages,
+            },
+            { signal },
+          );
+          stream.on('thinking', sentenceFeed(emit));
+          stream.on('streamEvent', alive);
+          return stream.finalMessage();
+        },
+        { signal: options.signal, emit, lostConnection: (err) => err instanceof Anthropic.APIConnectionError },
+      );
       jsonRetries = 0;
     } catch (err) {
       // With eager input streaming a tool input that is not parseable JSON rejects here; re-issue the turn.
+      // (So does a connection that breaks in the middle of an answer; the next attempt then finds it gone and waits.)
       if (err instanceof Anthropic.APIError || options.signal?.aborted || jsonRetries++ >= 2) throw err;
       continue;
     }

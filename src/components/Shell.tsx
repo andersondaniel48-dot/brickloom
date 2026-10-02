@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useCatalog } from '../lib/catalog.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
 import { AccountChip } from './Account.tsx';
+import { DesignChip } from './DesignChip.tsx';
 import { Logo, cx } from './ui.tsx';
 
 const NAV: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
@@ -69,6 +70,8 @@ export function Shell() {
       <main className={cx('mx-auto w-full', immersive ? 'max-w-none' : 'max-w-6xl px-4 pb-32 pt-5 short:pb-8 sm:px-8 sm:pt-8 lg:pb-12')}>
         <Outlet />
       </main>
+
+      <DesignChip />
 
       {/* Tab bar: phones and tablets. On a phone held sideways it stands on the left instead, where it costs no height. */}
       <nav className="safe-bottom pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 short:inset-y-0 short:right-auto short:items-center short:px-0 short:pb-0 short:pl-[max(env(safe-area-inset-left),0.5rem)] lg:hidden">

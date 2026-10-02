@@ -1,13 +1,13 @@
-import { ArrowUp, KeyRound, ScanLine, Sparkles, Square, Wand2 } from 'lucide-react';
+import { ArrowUp, Clock, KeyRound, LogOut, ScanLine, Sparkles, Square, Wand2, WifiOff } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
-import type { Placement } from '../../shared/build.ts';
+import { inWords } from '../../shared/estimate.ts';
 import { ModelView } from '../components/ModelView.tsx';
-import { Button, EmptyState, PageHeader, Segmented, Spinner, cx, toast } from '../components/ui.tsx';
+import { Button, EmptyState, PageHeader, Segmented, Spinner, cx } from '../components/ui.tsx';
 import { useCatalog } from '../lib/catalog.ts';
-import { db } from '../lib/db.ts';
-import { runDesign, type DesignEvent, type DesignSize } from '../lib/designer.ts';
+import { fractionDone, paceFor, timeLeft, useDesignJob, useNow, usualTotal } from '../lib/design-job.ts';
+import type { DesignSize } from '../lib/designer.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
 import { designerFor, modelName, useSettings } from '../lib/settings.ts';
 
@@ -35,62 +35,27 @@ export function CreatePage() {
   const designer = designerFor(useSettings());
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const [prompt, setPrompt] = useState(params.get('prompt') ?? '');
-  const [size, setSize] = useState<DesignSize>('medium');
-
-  const [working, setWorking] = useState(false);
-  const [status, setStatus] = useState('');
-  const [notes, setNotes] = useState<string[]>([]);
-  const [draft, setDraft] = useState<Placement[] | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const job = useDesignJob();
+  // A design that was stopped, or failed, leaves its request behind to try again with.
+  const [prompt, setPrompt] = useState(params.get('prompt') ?? job.prompt);
+  const [size, setSize] = useState<DesignSize>(job.prompt ? job.size : 'medium');
   const textRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => () => abortRef.current?.abort(), []);
 
   const inventory = useMemo(() => (rows ?? []).filter((r) => !r.part.startsWith('bl-')).map((r) => ({ part: r.part, color: r.color, qty: r.qty })), [rows]);
 
+  // The design is finished: go and look at it.
+  const { phase, build, clear } = job;
+  useEffect(() => {
+    if (phase !== 'ready' || !build) return;
+    clear();
+    navigate(`/builds/${build.id}`);
+  }, [phase, build, clear, navigate]);
+
   if (!rows) return null;
 
-  const generate = async () => {
+  const generate = () => {
     const text = prompt.trim();
-    if (!text || working) return;
-    const abort = new AbortController();
-    abortRef.current = abort;
-    setWorking(true);
-    setStatus('Starting');
-    setNotes([]);
-    setDraft(null);
-    const onEvent = (event: DesignEvent) => {
-      if (abort.signal.aborted) return;
-      if (event.type === 'status') setStatus(event.message);
-      else if (event.type === 'note') setNotes((n) => [...n.slice(-2), event.text]);
-      else if (event.type === 'draft') setDraft(event.parts);
-      else if (event.type === 'error') toast(event.message, 'error');
-      else if (event.type === 'done') {
-        const id = crypto.randomUUID();
-        void db.builds
-          .add({
-            id,
-            name: event.design.name,
-            description: event.design.description,
-            prompt: text,
-            engine: event.design.engine,
-            repaired: event.design.repaired,
-            createdAt: Date.now(),
-            parts: event.design.parts,
-            step: 0,
-          })
-          .then(() => navigate(`/builds/${id}`));
-      }
-    };
-    try {
-      await runDesign({ prompt: text, size, inventory }, catalog, { designer, signal: abort.signal, onEvent });
-    } catch (err) {
-      console.error(err);
-      if (!abort.signal.aborted) toast('The designer could not start. Check your connection and try again.', 'error');
-    } finally {
-      setWorking(false);
-    }
+    if (text && job.phase !== 'working') job.start({ prompt: text, size, inventory }, catalog, designer);
   };
 
   if (rows.length === 0) {
@@ -111,52 +76,7 @@ export function CreatePage() {
     );
   }
 
-  if (working) {
-    return (
-      <div className="mx-auto max-w-3xl">
-        <div className="relative overflow-hidden rounded-[32px] bg-paper">
-          <div className="studs absolute inset-0 [--stud:rgba(40,80,120,0.08)]" />
-          <div className="relative aspect-[4/3] sm:aspect-[16/10]">
-            {draft && draft.length > 0 ? (
-              <ModelView parts={draft} autoRotate className="size-full" />
-            ) : (
-              <div className="flex size-full items-center justify-center">
-                <div className="grid grid-cols-2 gap-2.5">
-                  {[0, 1, 2, 3].map((i) => (
-                    <motion.span
-                      key={i}
-                      className="size-9 rounded-full bg-[#15171c]"
-                      animate={{ scale: [1, 0.55, 1], opacity: [1, 0.4, 1] }}
-                      transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18 }}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-6 text-center">
-          <h1 className="flex items-center justify-center gap-3 text-2xl font-semibold">
-            <Spinner /> {status}
-          </h1>
-          <p className="mx-auto mt-1.5 max-w-lg truncate text-ink-2">"{prompt.trim()}"</p>
-          <div className="mx-auto mt-4 flex min-h-[72px] max-w-xl flex-col items-center justify-start gap-1 overflow-hidden text-sm leading-relaxed text-ink-3">
-            <AnimatePresence initial={false} mode="popLayout">
-              {notes.slice(-1).map((note) => (
-                <motion.p key={note} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="line-clamp-3">
-                  {note}
-                </motion.p>
-              ))}
-            </AnimatePresence>
-          </div>
-          <Button className="mt-4" onClick={() => abortRef.current?.abort()}>
-            <Square className="size-4" /> Stop
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  if (job.phase !== 'idle') return <Designing />;
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -203,7 +123,7 @@ export function CreatePage() {
           <>
             <Sparkles className="mt-0.5 size-5 shrink-0" />
             <p className="text-ink-2">
-              <span className="font-semibold text-ink">Designed by {modelName(designer.provider, designer.model)}.</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have.
+              <span className="font-semibold text-ink">Designed by {modelName(designer.provider, designer.model)}.</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have. A {size} build takes {inWords(usualTotal(paceFor(designer.model, size).pace))}, and you can use the rest of the app while it is made.
             </p>
           </>
         ) : (
@@ -219,6 +139,98 @@ export function CreatePage() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- while it is being made
+
+const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+
+/** The design under way: the latest draft, what the designer is doing, how long is left, and whether it is safe to leave. */
+function Designing() {
+  const job = useDesignJob();
+  const now = useNow();
+  const left = timeLeft(job, now);
+  const spent = Math.max(0, now - job.startedAt);
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <div className="relative overflow-hidden rounded-[32px] bg-paper">
+        <div className="studs absolute inset-0 [--stud:rgba(40,80,120,0.08)]" />
+        <div className="relative aspect-[4/3] sm:aspect-[16/10]">
+          {job.draft && job.draft.length > 0 ? (
+            <ModelView parts={job.draft} autoRotate className="size-full" />
+          ) : (
+            <div className="flex size-full items-center justify-center">
+              <div className="grid grid-cols-2 gap-2.5">
+                {[0, 1, 2, 3].map((i) => (
+                  <motion.span
+                    key={i}
+                    className="size-9 rounded-full bg-[#15171c]"
+                    animate={{ scale: [1, 0.55, 1], opacity: [1, 0.4, 1] }}
+                    transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.18 }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-6 text-center">
+        <h1 className="flex items-center justify-center gap-3 text-2xl font-semibold">
+          {job.paused === 'offline' ? <WifiOff className="size-6" /> : <Spinner />}
+          {job.paused === 'offline' ? 'Waiting for the internet' : job.paused ? 'Picking up where it left off' : job.status}
+        </h1>
+        <p className="mx-auto mt-1.5 max-w-lg truncate text-ink-2">"{job.prompt}"</p>
+
+        {job.by && (
+          <div className="mx-auto mt-5 max-w-md">
+            <div className="h-2 overflow-hidden rounded-full bg-ink/10" role="progressbar" aria-label="Design progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={left === null ? undefined : Math.round(fractionDone(job, left, now) * 100)}>
+              <div
+                className={cx('h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear', left === null && 'opacity-50')}
+                style={{ width: `${Math.round((left === null ? fractionDone(job, 60000, job.pausedAt ?? now) : fractionDone(job, left, now)) * 100)}%` }}
+              />
+            </div>
+            <p className="tabular mt-2.5 flex items-center justify-center gap-2 text-[15px] font-semibold">
+              <Clock className="size-4 text-ink-3" />
+              {left === null ? (job.paused === 'offline' ? 'It carries on when you are back online' : 'Back in a moment') : <span className="first-letter:uppercase">{inWords(left)} left</span>}
+              <span className="font-normal text-ink-3">· {clock(spent)} so far</span>
+            </p>
+            {!job.paceKnown && <p className="mt-1 text-xs text-ink-3">A first guess for {job.by}. The estimate learns from each design you make.</p>}
+          </div>
+        )}
+
+        <div className="mx-auto mt-4 flex min-h-[60px] max-w-xl flex-col items-center justify-start gap-1 overflow-hidden text-sm leading-relaxed text-ink-3">
+          <AnimatePresence initial={false} mode="popLayout">
+            {job.note && (
+              <motion.p key={job.note} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="line-clamp-3">
+                {job.note}
+              </motion.p>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <Button className="mt-2" onClick={job.stop}>
+          <Square className="size-4" /> Stop
+        </Button>
+      </div>
+
+      {job.by && (
+        <div className="mt-8 flex items-start gap-3 rounded-3xl border border-line bg-surface-2 p-4 text-left text-[15px]">
+          <LogOut className="mt-0.5 size-5 shrink-0" />
+          <div className="space-y-1.5 text-ink-2">
+            <p>
+              <span className="font-semibold text-ink">You can leave this screen.</span> Scan, browse your collection or look at other builds: the design carries on, and you are told when it is ready.
+            </p>
+            <p>
+              <span className="font-semibold text-ink">Keep Brickloom open, though.</span> If you switch to another app or the screen locks, the design pauses, and carries on from its last draft when you come back. Closing Brickloom cancels it.
+              {job.awake && ' The screen is being kept on while it works.'}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

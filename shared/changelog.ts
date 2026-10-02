@@ -13,6 +13,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '1.7.0',
+    date: '2026-10-02',
+    title: 'How long a design will take, and whether you can leave',
+    changes: [
+      'While a build is being designed you now see how long is left, and how long it has taken so far. The estimate starts as a guess and learns from each design you make.',
+      'You can leave the Create screen while it works. Scan, browse your collection or look at other builds: a small bar shows the time left, and tells you when the build is ready.',
+      'If you switch to another app, lock the screen or lose your connection, the design now pauses and carries on from its last draft when you come back, instead of failing.',
+      'The screen is kept from locking while a design is being made, on phones that allow it.',
+      'The Create screen says how long a build of the size you picked usually takes, before you start.',
+    ],
+  },
+  {
     version: '1.6.0',
     date: '2026-10-02',
     title: 'Choose your Claude model',

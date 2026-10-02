@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { DesignSession, MAX_ROUNDS, parseSubmission } from '../src/lib/design-core.ts';
+import { DesignSession, MAX_ROUNDS, parseSubmission, resilientTurn } from '../src/lib/design-core.ts';
 import type { Shapes } from './build.ts';
 import type { DesignCatalog, DesignEvent, DesignRequest } from './design.ts';
 
@@ -92,4 +92,128 @@ test('when no model ever submits a build, the builder is told', () => {
   const { session, events } = start();
   session.finish('claude');
   assert.equal(events.at(-1)!.type, 'error');
+});
+
+// ---------------------------------------------------------------- surviving a lost connection
+
+/** The app's surroundings, under the test's control. */
+function surroundings(start: { hidden?: boolean; offline?: boolean } = {}) {
+  const watchers = new Set<() => void>();
+  const state = { hidden: start.hidden ?? false, offline: start.offline ?? false };
+  return {
+    hidden: () => state.hidden,
+    offline: () => state.offline,
+    watch: (changed: () => void) => (watchers.add(changed), () => void watchers.delete(changed)),
+    set(next: Partial<typeof state>) {
+      Object.assign(state, next);
+      for (const changed of [...watchers]) changed();
+    },
+  };
+}
+
+class Dropped extends Error {}
+const lostConnection = (err: unknown) => err instanceof Dropped;
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Every wait is a thousandth of its real length.
+const patience = 0.001;
+
+test('a round that goes through is run once and says nothing', async () => {
+  const events: DesignEvent[] = [];
+  let runs = 0;
+  const result = await resilientTurn(async () => (runs++, 'answer'), { emit: (e) => events.push(e), lostConnection, surroundings: surroundings(), patience });
+  assert.equal(result, 'answer');
+  assert.equal(runs, 1);
+  assert.deepEqual(events, []);
+});
+
+test('a round cut off while the app is away waits, and is run again on return', async () => {
+  const around = surroundings({ hidden: true });
+  const events: DesignEvent[] = [];
+  let runs = 0;
+  const turn = resilientTurn(
+    async () => {
+      if (runs++ === 0) throw new Dropped();
+      return 'answer';
+    },
+    { emit: (e) => events.push(e), lostConnection, surroundings: around, patience },
+  );
+  await pause(20);
+  assert.deepEqual(events, [{ type: 'paused', reason: 'away' }]);
+  assert.equal(runs, 1, 'nothing is retried while the app is away');
+  around.set({ hidden: false });
+  assert.equal(await turn, 'answer');
+  assert.deepEqual(events.map((e) => e.type), ['paused', 'resumed']);
+});
+
+test('with no network, it says so and waits for it', async () => {
+  const around = surroundings({ offline: true });
+  const events: DesignEvent[] = [];
+  let runs = 0;
+  const turn = resilientTurn(async () => (runs++ === 0 ? Promise.reject(new Dropped()) : 'answer'), { emit: (e) => events.push(e), lostConnection, surroundings: around, patience });
+  await pause(20);
+  assert.deepEqual(events, [{ type: 'paused', reason: 'offline' }]);
+  around.set({ offline: false });
+  assert.equal(await turn, 'answer');
+});
+
+test('other failures are not retried', async () => {
+  let runs = 0;
+  await assert.rejects(
+    resilientTurn(async () => (runs++, Promise.reject(new Error('the key was rejected'))), { emit: () => {}, lostConnection, surroundings: surroundings(), patience }),
+    /key was rejected/,
+  );
+  assert.equal(runs, 1);
+});
+
+test('a connection that keeps failing with the app in plain view is given up on', async () => {
+  let runs = 0;
+  await assert.rejects(resilientTurn(async () => (runs++, Promise.reject(new Dropped())), { emit: () => {}, lostConnection, surroundings: surroundings(), patience }), Dropped);
+  assert.equal(runs, 3);
+});
+
+test('a round that has gone quiet after the app comes back is cut short and run again', async () => {
+  const around = surroundings();
+  const events: DesignEvent[] = [];
+  let runs = 0;
+  const turn = resilientTurn(
+    (signal) =>
+      runs++ === 0
+        ? // Never answers, like a connection the system has silently dropped.
+          new Promise<string>((_, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled'))))
+        : Promise.resolve('answer'),
+    { emit: (e) => events.push(e), lostConnection, surroundings: around, patience },
+  );
+  around.set({ hidden: true });
+  await pause(30); // away for longer than the 5 "seconds" that count as having left
+  around.set({ hidden: false });
+  assert.equal(await turn, 'answer');
+  assert.equal(runs, 2);
+  assert.deepEqual(events.map((e) => e.type), ['paused', 'resumed']);
+});
+
+test('a round that keeps talking after the app comes back is left alone', async () => {
+  const around = surroundings();
+  let runs = 0;
+  const turn = resilientTurn(
+    async (_signal, alive) => {
+      runs++;
+      // Heard from every 20 "seconds" for three "minutes".
+      for (let i = 0; i < 9; i++) (await pause(20), alive());
+      return 'answer';
+    },
+    { emit: () => {}, lostConnection, surroundings: around, patience },
+  );
+  around.set({ hidden: true });
+  await pause(30);
+  around.set({ hidden: false });
+  assert.equal(await turn, 'answer');
+  assert.equal(runs, 1);
+});
+
+test('stopping the design stops the waiting too', async () => {
+  const abort = new AbortController();
+  const turn = resilientTurn(async () => Promise.reject(new Dropped()), { signal: abort.signal, emit: () => {}, lostConnection, surroundings: surroundings({ hidden: true }), patience });
+  await pause(20);
+  abort.abort(new Error('stopped'));
+  await assert.rejects(turn, /stopped/);
 });

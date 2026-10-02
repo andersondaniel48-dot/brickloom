@@ -22,6 +22,10 @@ export type DesignEvent =
   | { type: 'status'; message: string }
   | { type: 'note'; text: string }
   | { type: 'draft'; round: number; parts: Placement[]; issues: number }
+  /** The connection to the model was lost (the app was left, the screen locked, the network dropped): waiting to carry on. */
+  | { type: 'paused'; reason: 'away' | 'offline' }
+  /** Carrying on: the round that was interrupted starts again. */
+  | { type: 'resumed' }
   | { type: 'done'; design: DesignResult }
   | { type: 'error'; message: string };
 
