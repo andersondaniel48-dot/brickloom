@@ -3,9 +3,11 @@ import { Route, Routes } from 'react-router';
 import { MergeDialog } from './components/Account.tsx';
 import { Shell } from './components/Shell.tsx';
 import { Button, Logo, Toasts } from './components/ui.tsx';
+import { WhatsNew } from './components/WhatsNew.tsx';
 import { useCatalogStore } from './lib/catalog.ts';
 import { initLDraw } from './lib/ldraw.ts';
 import { applyTheme, useSettings } from './lib/settings.ts';
+import { announceUpdate } from './lib/whats-new.ts';
 import { BuildPage } from './pages/Build.tsx';
 import { BuildsPage } from './pages/Builds.tsx';
 import { CollectionPage } from './pages/Collection.tsx';
@@ -26,7 +28,10 @@ export function App() {
   useEffect(() => applyTheme(theme), [theme]);
 
   useEffect(() => {
-    if (catalog) void initLDraw(catalog.colorList);
+    if (!catalog) return;
+    void initLDraw(catalog.colorList);
+    // Once the app is on screen: if it has updated since it was last opened here, say what changed.
+    void announceUpdate();
   }, [catalog]);
 
   if (!catalog) {
@@ -70,6 +75,7 @@ export function App() {
         </Route>
       </Routes>
       <MergeDialog />
+      <WhatsNew />
       <Toasts />
     </>
   );

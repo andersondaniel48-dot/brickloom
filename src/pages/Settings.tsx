@@ -1,14 +1,18 @@
-import { Check, Download, KeyRound, Monitor, Moon, PackageOpen, Share, Smartphone, Sun, Trash2, Upload } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { Check, Download, KeyRound, Monitor, Moon, PackageOpen, ScrollText, Share, Smartphone, Sun, Trash2, Upload } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { VERSION } from '../../shared/changelog.ts';
 import { AccountSection } from '../components/Account.tsx';
 import { Button, PageHeader, Segmented, toast } from '../components/ui.tsx';
+import { formatDay } from '../components/WhatsNew.tsx';
 import { useCatalog } from '../lib/catalog.ts';
 import { accountsEnabled, useAccount } from '../lib/cloud/index.ts';
 import { addPieces, db, type NewPiece } from '../lib/db.ts';
 import { isIOS, useInstall } from '../lib/install.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
+import { asset } from '../lib/paths.ts';
 import { useSettings, type Theme } from '../lib/settings.ts';
 import { STARTER_COLLECTION } from '../lib/starter.ts';
+import { useWhatsNew } from '../lib/whats-new.ts';
 
 export function SettingsPage() {
   const catalog = useCatalog();
@@ -19,6 +23,16 @@ export function SettingsPage() {
   const { available, installed, install } = useInstall();
   const signedIn = useAccount((s) => Boolean(s.user));
   const fileRef = useRef<HTMLInputElement>(null);
+  const showReleaseNotes = useWhatsNew((s) => s.open);
+
+  // When the part catalog this copy of the app is using was put together.
+  const [catalogDate, setCatalogDate] = useState<string | null>(null);
+  useEffect(() => {
+    fetch(asset('catalog/meta.json'))
+      .then((res) => res.json() as Promise<{ builtAt?: string }>)
+      .then((meta) => setCatalogDate(meta.builtAt ?? null))
+      .catch(() => undefined);
+  }, []);
 
   const exportCollection = () => {
     const data = { app: 'brickloom', version: 1, exportedAt: new Date().toISOString(), pieces: (rows ?? []).map(({ part, color, qty, name, image }) => ({ part, color, qty, name, image })) };
@@ -159,6 +173,22 @@ export function SettingsPage() {
       </Section>
 
       <Section title="About">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[15px]">
+            <dt className="text-ink-2">Version</dt>
+            <dd className="tabular font-semibold">{VERSION}</dd>
+            <dt className="text-ink-2">Build</dt>
+            <dd className="tabular">
+              <span className="font-mono text-sm">{__BUILD__.commit}</span>
+              <span className="text-ink-3"> · {formatDay(__BUILD__.time)}</span>
+            </dd>
+            <dt className="text-ink-2">Part catalog</dt>
+            <dd className="tabular">{catalogDate ? formatDay(catalogDate) : '…'}</dd>
+          </dl>
+          <Button onClick={showReleaseNotes}>
+            <ScrollText className="size-4" /> Release notes
+          </Button>
+        </div>
         <div className="space-y-2.5 text-[15px] leading-relaxed text-ink-2">
           <p>
             The catalog of {catalog.size.toLocaleString()} parts and {catalog.colorList.length} colors comes from{' '}

@@ -161,6 +161,18 @@ Your collection and builds are stored in the browser (IndexedDB). They leave the
 piece photos sent to Brickognize for identification, the inventory sent to Anthropic when you ask
 for a design, and, if you sign in, the copy saved to your account.
 
+## Releasing a new version
+
+1. Add an entry at the top of `shared/changelog.ts`, written for the people who use the app.
+2. Give `package.json` the same version (`npm version 1.4.0 --no-git-tag-version`). A test fails
+   if the two disagree.
+3. Push to `main`.
+
+The version, the build it came from and the date of the part catalog are shown under Settings >
+About, along with the notes for every release. An installed app updates itself in the background
+and switches to the new version the next time it is opened; that first time, it shows the notes for
+everything newer than the version last seen on that device.
+
 ## Commands
 
 | Command | What it does |

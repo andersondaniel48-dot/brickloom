@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { copyFileSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
@@ -8,6 +9,17 @@ import { VitePWA } from 'vite-plugin-pwa';
 // Where the app is served from. GitHub Pages serves a project at /<repository>/, and the deploy
 // workflow passes that in; everywhere else the app sits at the root.
 const base = process.env.BASE_PATH ? `/${process.env.BASE_PATH.replace(/^\/|\/$/g, '')}/` : '/';
+
+// Which commit this build is of, for the version details in Settings. The deploy workflow says
+// which; on a developer's machine git is asked; failing both it is just "dev".
+function commit(): string {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'dev';
+  } catch {
+    return 'dev';
+  }
+}
 
 /**
  * Static hosts have no idea that /collection or /builds/abc are pages of this app. GitHub Pages
@@ -26,6 +38,7 @@ const spaFallback = (): Plugin => ({
 // access on secure origins, and the certificate is self-signed, so expect a one-time warning.
 export default defineConfig(({ mode }) => ({
   base,
+  define: { __BUILD__: JSON.stringify({ commit: commit(), time: new Date().toISOString() }) },
   plugins: [
     react(),
     tailwindcss(),
