@@ -10,7 +10,7 @@ import { addPieces, db, type NewPiece } from '../lib/db.ts';
 import { isIOS, useInstall } from '../lib/install.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
 import { asset } from '../lib/paths.ts';
-import { OPENAI_MODELS, designerFor, useSettings, type Provider, type Theme } from '../lib/settings.ts';
+import { MODELS, designerFor, modelName, useSettings, type Provider, type Theme } from '../lib/settings.ts';
 import { STARTER_COLLECTION } from '../lib/starter.ts';
 import { useWhatsNew } from '../lib/whats-new.ts';
 
@@ -174,9 +174,11 @@ const PROVIDERS: Record<Provider, { name: string; company: string; placeholder: 
 /** Which AI designs the builds, and the API key it needs. */
 function DesignerSection() {
   const settings = useSettings();
-  const { provider, setProvider, apiKey, setApiKey, openaiKey, setOpenaiKey, openaiModel, setOpenaiModel } = settings;
+  const { provider, setProvider, apiKey, setApiKey, claudeModel, setClaudeModel, openaiKey, setOpenaiKey, openaiModel, setOpenaiModel } = settings;
   const saved = provider === 'openai' ? openaiKey : apiKey;
   const save = provider === 'openai' ? setOpenaiKey : setApiKey;
+  const model = provider === 'openai' ? openaiModel : claudeModel;
+  const setModel = provider === 'openai' ? setOpenaiModel : setClaudeModel;
   const [draft, setDraft] = useState(saved);
   // Each service has its own key: show the right one when switching between them.
   useEffect(() => setDraft(saved), [provider, saved]);
@@ -234,23 +236,21 @@ function DesignerSection() {
         </Button>
       </form>
 
-      {provider === 'openai' && (
-        <label className="mt-3 block">
-          <span className="mb-1.5 block text-sm font-semibold">Model</span>
-          <select
-            value={openaiModel}
-            onChange={(e) => setOpenaiModel(e.target.value)}
-            className="h-11 w-full rounded-2xl border border-line bg-surface-2 px-3.5 text-[15px] outline-none focus:border-ink"
-          >
-            {OPENAI_MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-          <span className="mt-1.5 block text-sm text-ink-3">{OPENAI_MODELS.find((m) => m.id === openaiModel)?.note}</span>
-        </label>
-      )}
+      <label className="mt-3 block">
+        <span className="mb-1.5 block text-sm font-semibold">Model</span>
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          className="h-11 w-full rounded-2xl border border-line bg-surface-2 px-3.5 text-[15px] outline-none focus:border-ink"
+        >
+          {MODELS[provider].map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        <span className="mt-1.5 block text-sm text-ink-3">{MODELS[provider].find((m) => m.id === model)?.note}</span>
+      </label>
 
       <div className="mt-3 space-y-2 text-sm leading-relaxed text-ink-3">
         <p>
@@ -261,7 +261,7 @@ function DesignerSection() {
         </p>
         <p>
           {inUse
-            ? `Builds are now designed by ${PROVIDERS[inUse.provider].name}${inUse.provider !== provider ? `, as there is no key for ${name} yet` : ''}.`
+            ? `Builds are now designed by ${modelName(inUse.provider, inUse.model)}${inUse.provider !== provider ? `, as there is no key for ${name} yet` : ''}.`
             : 'Without a key, the Create tab uses a simple offline builder.'}{' '}
           Each device needs its key entered once; use a key with a spending limit, since anyone with access to this device's browser can use it.
         </p>

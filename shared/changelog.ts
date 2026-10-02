@@ -13,6 +13,16 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: '1.6.0',
+    date: '2026-10-02',
+    title: 'Choose your Claude model',
+    changes: [
+      'Settings now lets you pick which Claude model designs your builds: Fable 5.1, Opus 5.5, Sonnet 5.5 or Haiku 4.5, from the most capable to the cheapest.',
+      'Opus 5.5 remains the one used unless you choose otherwise.',
+      'The Create tab says which model will design the build.',
+    ],
+  },
+  {
     version: '1.5.0',
     date: '2026-10-02',
     title: 'Design with ChatGPT',

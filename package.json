@@ -1,7 +1,7 @@
 {
   "name": "brickloom",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "description": "Scan, catalog and sort your bricks, then design new builds from what you own and follow step-by-step instructions.",
   "scripts": {

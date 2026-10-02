@@ -35,8 +35,8 @@ export async function runDesign(
       await designWithOpenAI(request, designCatalog, onEvent, { apiKey: designer.apiKey, model: designer.model, signal });
     } else {
       const { designWithClaude, describeError } = await import('./claude-designer.ts');
-      describe = describeError;
-      await designWithClaude(request, designCatalog, onEvent, { apiKey: designer.apiKey, signal });
+      describe = (err) => describeError(err, designer.model);
+      await designWithClaude(request, designCatalog, onEvent, { apiKey: designer.apiKey, model: designer.model, signal });
     }
   } catch (err) {
     if (signal.aborted) return;

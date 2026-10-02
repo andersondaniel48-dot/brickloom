@@ -9,7 +9,7 @@ import { useCatalog } from '../lib/catalog.ts';
 import { db } from '../lib/db.ts';
 import { runDesign, type DesignEvent, type DesignSize } from '../lib/designer.ts';
 import { useInventory, useStats } from '../lib/inventory.ts';
-import { OPENAI_MODELS, designerFor, useSettings } from '../lib/settings.ts';
+import { designerFor, modelName, useSettings } from '../lib/settings.ts';
 
 const IDEAS = [
   'A cozy cottage with a pitched roof',
@@ -203,7 +203,7 @@ export function CreatePage() {
           <>
             <Sparkles className="mt-0.5 size-5 shrink-0" />
             <p className="text-ink-2">
-              <span className="font-semibold text-ink">{designer.provider === 'openai' ? `Designed by ${OPENAI_MODELS.find((m) => m.id === designer.model)?.name ?? designer.model}.` : 'Designed by Claude.'}</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have.
+              <span className="font-semibold text-ink">Designed by {modelName(designer.provider, designer.model)}.</span> Every design is checked brick by brick: nothing overlaps, everything attaches, and it never asks for a piece you do not have.
             </p>
           </>
         ) : (

@@ -65,7 +65,7 @@ will not install the app from such an address.
 
 Designs are created by an AI model: Claude, through the Anthropic API, or one of OpenAI's GPT
 models, through the OpenAI API. Paste an API key for either (or both) into **Settings** in the app,
-once on each device, and choose there which one does the designing. A key is kept in that browser
+once on each device, and choose there which one does the designing, and which of its models. A key is kept in that browser
 only and sent only to the company that issued it; use a key with a spending limit. Without a key
 the Create tab falls back to a small offline builder that only knows towers, houses and pyramids.
 
